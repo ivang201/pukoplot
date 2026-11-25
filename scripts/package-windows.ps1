@@ -37,7 +37,7 @@ $resources = @($tracked | Where-Object {
     $_ -cmatch '^public/art/(?:(?!_parts/)[\w-]+/)*[\w-]+\.(?:webp|png|jpg|jpeg|svg|ico)$' -or
     $_ -cmatch '^public/fonts/[\w.-]+\.(?:woff2|txt)$' -or
     $_ -cmatch '^public/vendor/[\w.-]+\.(?:js|txt)$' -or
-    $_ -cin @('public/shirts/README.txt', 'docs/river-run.webp', 'README.md', 'LICENSE', 'ИНСТРУКЦИЯ.txt')
+    $_ -cin @('public/shirts/README.txt', 'docs/river-run.webp', 'docs/ROADMAP.md', 'README.md', 'LICENSE', 'ИНСТРУКЦИЯ.txt')
 })
 
 Add-Type -AssemblyName System.IO.Compression
