@@ -1,0 +1,11 @@
+dist*
+*.db
+*.db-*
+pukoplot-db.json
+records.json
+node_modules
+.git
+_parts
+*.exe
+*.mp4
+.env*
