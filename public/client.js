@@ -54,7 +54,13 @@ const NET = window.__net = { frames: 0, steps: 0, corr: 0, maxCorr: 0, resets: 0
 // ------------------------------------------------------------
 //  Рендер
 // ------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: quality >= 2, powerPreference: 'high-performance' });
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias: quality >= 2, powerPreference: 'high-performance' }); }
+catch (cause) {
+  const error = new Error('Не удалось создать контекст WebGL 2', { cause });
+  error.name = 'WebGLUnavailable';
+  throw error;
+}
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;                 // всегда включены: переключение пересобирает шейдеры (= фриз)
 renderer.shadowMap.type = quality >= 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;   // тип теней задаётся один раз — смена пересобирает шейдеры
@@ -403,7 +409,7 @@ function onMsg(m, tRecv = nowS()) {
     case 'room': onRoom(m); break;
     case 's': case 'a': onSnap(m, tRecv); break;
     case 'ev': playEvent(m); break;
-    case 'results': lastResults = m.r; break;
+    case 'results': lastResults = m.r; if (phase === 'results') showResults(); break;
     case 'me': me = m.p; onMe(); break;
     case 'authfail': joined = false; updateScreens(); $('authErr').textContent = m.reason; $('authErr').classList.remove('hidden'); $('pinInput').focus(); break;
     case 'prof': showProfile(m.p, false); break;
@@ -436,7 +442,14 @@ function onRoom(m) {
   if (mine) selSkin = mine.skin;
   renderLobby(); renderShirtPicker(); updateScreens();
   if (!$('wardrobe').classList.contains('hidden')) renderWardrobe();
-  if (phase === 'results' && prevPhase !== 'results') showResults();
+  if (phase === 'results') {
+    const isHost = m.host === myId;
+    $('resBtns').classList.toggle('hidden', !isHost);
+    $('resWait').classList.toggle('hidden', isHost);
+    $('resTourReset').classList.toggle('hidden', !isHost || !m.arena);
+    if (prevPhase !== 'results') showResults();
+    else if (m.arena) $('resTourTable').innerHTML = tourTable(m.tour, true);
+  }
   if (phase === 'count' && prevPhase !== 'count') clearMess();
   for (const p of m.players) { const h = hippos.get(p.id); if (h && h.key !== hippoKey(p)) removeHippo(p.id); }
 }
@@ -523,7 +536,8 @@ $('rulesBox').addEventListener('click', (e) => {
 function renderModes() {
   const isHost = room.host === myId, cur = room.mode || 'race';
   const list = [['race', '🛶', 'Сплав', 'трассы'], ...MODE_KEYS.map(k => [k, ARENA_MODES[k].icon, ARENA_MODES[k].name, ARENA_MODES[k].sub])];
-  $('modeChips').innerHTML = list.map(([k, ic, n, sub]) => `<button class="mode ${cur === k ? 'on' : ''}" data-mode="${k}" ${isHost ? '' : 'disabled'}><span class="mi">${ic}</span><b>${n}</b><small>${sub}</small></button>`).join('');
+  $('modeName').textContent = cur === 'race' ? 'Сплав' : ARENA_MODES[cur].name;
+  $('modeChips').innerHTML = list.map(([k, ic, n, sub]) => `<button class="mode ${cur === k ? 'on' : ''}" data-mode="${k}" aria-pressed="${cur === k}" ${isHost ? '' : 'disabled'}><span class="mi">${ic}</span><b>${n}</b><small>${sub}</small></button>`).join('');
   const A = room.arena;
   $('arenaBox').classList.toggle('hidden', !A);
   $('levelList').classList.toggle('hidden', !!A);
@@ -532,7 +546,8 @@ function renderModes() {
   if (A) {
     const M = ARENA_MODES[A.mode];
     const goalTxt = modeGoalText(A.mode);
-    const art = A.mode === 'ball' ? '<img class="arena-art" src="art/pukoball.webp" width="800" height="450" alt="Два экипажа борются за мяч на воде">' : '';
+    const artFile = A.mode === 'ball' ? 'art/pukoball.webp' : `art/routes/${M.theme}.webp`;
+    const art = `<img class="arena-art" src="${artFile}" alt="" width="800" height="450">`;
     $('arenaBox').innerHTML = `<div class="arena-card">${art}<div class="ah">${M.icon} <b>${M.name}</b> <small>${M.sub}</small></div><p>${esc(M.desc)}</p>
       <div class="goal">Победа: ${goalTxt} · раунд до ${Math.round(M.time / 60)} мин</div>
       <div class="teams">${A.teams.map(t => `<div class="tm" style="--tc:${t.color}"><i></i><b>${esc(t.name)}</b><span title="${esc(shapeOf(t.shape).name)}">${shapeOf(t.shape).icon}</span></div>`).join('') || '<span class="note">Нужен хотя бы один игрок</span>'}</div>
@@ -541,7 +556,59 @@ function renderModes() {
     $('tourBtn').onclick = () => showTour();
   }
 }
-$('modeChips').addEventListener('click', (e) => { const b = e.target.closest('.mode'); if (!b || !room || room.host !== myId) return; send({ t: 'mode', mode: b.dataset.mode }); });
+$('modeChips').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-mode]');
+  if (!button || room?.host !== myId) return;
+  send({ t: 'mode', mode: button.dataset.mode });
+  closePicker($('modePicker'));
+});
+
+function closePicker(details) {
+  details.open = false;
+  details.querySelector('summary').focus({ preventScroll: true });
+}
+
+function routeInfo(index) {
+  if (index === ENDLESS || index === DAILY) {
+    const daily = index === DAILY, info = daily ? DAILY_INFO : ENDLESS_INFO;
+    const mutator = daily ? dailyMutator(room.daily.seed) : null;
+    const record = room.records[daily ? 'daily:' + room.daily.date : 'endless'];
+    const best = daily ? (me?.data.daily?.date === room.daily.date ? me.data.daily.best : 0) : me?.endlessBest;
+    return {
+      title: info.name, badge: daily ? '☀' : '∞', art: daily ? 'daily' : 'endless',
+      description: daily ? `${mutator.name}. ${mutator.desc}. ${info.desc}` : info.desc,
+      goal: `Жизней: ${room.rules.lives}${best ? ' · ваш рекорд ' + fmtDist(best) : ''}`,
+      record: record ? `${daily ? 'Лучший сегодня' : 'Рекорд'} ${fmtDist(record.dist)} · ${record.names.join(', ')}` : daily ? 'Сегодня ещё никто не плавал' : '',
+    };
+  }
+  const level = room.levels[index], medal = medalTimes(index), record = room.records[index], best = me?.data.bests?.[index];
+  return {
+    title: level.name, badge: String(index + 1), art: ['day', 'rapids', 'spikes'][index] || level.theme,
+    description: level.desc,
+    goal: `Золото ${fmtTime(medal.gold)} · Серебро ${fmtTime(medal.silver)}${best ? ' · ваше время ' + fmtTime(best) : ''}`,
+    record: record ? `${['', 'Бронза', 'Серебро', 'Золото'][medalFor(index, record.time)]}, рекорд ${fmtTime(record.time)} · ${record.names.join(', ')}` : '',
+  };
+}
+
+let lastRouteChoices = '';
+function renderRoutes() {
+  if (room.arena) return;
+  const indices = [...room.levels.keys(), ENDLESS];
+  if (room.daily) indices.push(DAILY);
+  const active = routeInfo(room.level), canSelect = room.host === myId;
+  $('routeCard').innerHTML = `<div class="route-cover"><img src="art/routes/${active.art}.webp" alt="">
+    <h4 id="routeName">${esc(active.title)}</h4></div><div class="route-copy"><p>${esc(active.description)}</p>
+    <p class="route-goal">${esc(active.goal)}</p>${active.record ? `<p class="route-record">${esc(active.record)}</p>` : ''}</div>`;
+  const choices = indices.map(i => {
+    const r = routeInfo(i), current = i === room.level;
+    return `<button type="button" class="route-choice" data-level="${i}" aria-pressed="${current}" ${canSelect ? '' : 'disabled'} title="${esc([r.description, r.goal, r.record].filter(Boolean).join(' · '))}">
+      <img loading="lazy" src="art/routes/${r.art}.webp" alt="" width="60" height="54"><span><small>${i < ENDLESS ? 'Трасса ' : ''}${r.badge}</small><b>${esc(r.title)}</b></span></button>`;
+  }).join('');
+  if (choices !== lastRouteChoices) {
+    $('routeChoices').innerHTML = choices;
+    lastRouteChoices = choices;
+  }
+}
 
 function renderLobby() {
   if (!room) return;
@@ -554,17 +621,7 @@ function renderLobby() {
   const taken = takenSkins();
   $('myLook').innerHTML = SKINS.map((s, i) => shirtHTML(i, i === selSkin, taken.has(i))).join('');
   const isHost = room.host === myId;
-  const cards = room.levels.map((l, i) => {
-    const r = room.records[i], mt = medalTimes(i), best = me && me.data.bests && me.data.bests[i];
-    return `<div class="lvl th-${l.theme} ${i === room.level ? 'sel' : ''} ${isHost ? '' : 'locked'}" data-level="${i}"><span class="num">${i + 1}</span><b>${esc(l.name)}</b><span class="desc">${esc(l.desc)}</span>${r ? `<div class="rec">${['', 'Бронза', 'Серебро', 'Золото'][medalFor(i, r.time)]}, рекорд ${fmtTime(r.time)}: ${esc(r.names.join(', '))}</div>` : ''}<div class="goal">Золото до ${fmtTime(mt.gold)}, серебро до ${fmtTime(mt.silver)}${best ? ` · ваше лучшее ${fmtTime(best)}` : ''}</div></div>`;
-  });
-  const er = room.records.endless;
-  cards.push(`<div class="lvl endless ${room.level === ENDLESS ? 'sel' : ''} ${isHost ? '' : 'locked'}" data-level="${ENDLESS}"><span class="num">∞</span><b>${ENDLESS_INFO.name}</b><span class="desc">${ENDLESS_INFO.desc}</span>${er ? `<div class="rec">Рекорд ${fmtDist(er.dist)}: ${esc(er.names.join(', '))}</div>` : ''}<div class="goal">Жизней: ${room.rules.lives}${me && me.endlessBest ? ` · ваше лучшее ${fmtDist(me.endlessBest)}` : ''}</div></div>`);
-  if (room.daily) {
-    const mut = dailyMutator(room.daily.seed), dr = room.records['daily:' + room.daily.date], mine = me && me.data.daily && me.data.daily.date === room.daily.date ? me.data.daily.best : 0;
-    cards.push(`<div class="lvl daily ${room.level === DAILY ? 'sel' : ''} ${isHost ? '' : 'locked'}" data-level="${DAILY}"><span class="num">📅</span><b>${DAILY_INFO.name} · ${esc(mut.name)}</b><span class="desc">${esc(mut.desc)}. ${DAILY_INFO.desc}</span>${dr ? `<div class="rec">Лучший сегодня ${fmtDist(dr.dist)}: ${esc(dr.names.join(', '))}</div>` : '<div class="rec">Сегодня ещё никто не плавал</div>'}<div class="goal">Жизней: ${room.rules.lives}${mine ? ` · ваше лучшее сегодня ${fmtDist(mine)}` : ''}</div></div>`);
-  }
-  $('levelList').innerHTML = cards.join('');
+  renderRoutes();
   $('startBtn').textContent = isArena() ? 'В бой!' : 'Поплыли!';
   $('startBtn').classList.toggle('hidden', !isHost);
   $('botBtns').classList.toggle('hidden', !isHost || isArena());
@@ -580,7 +637,12 @@ $('myLook').addEventListener('click', (e) => {
   if (sh) { selSkin = +sh.dataset.skin; lsSet('puk.skin', selSkin); send({ t: 'look', skin: selSkin }); }
 });
 $('playerList').addEventListener('click', (e) => { const el = e.target.closest('.pl'); if (!el || el.dataset.bot === '1') return; if (me && el.dataset.name === me.name) openMyProfile(); else send({ t: 'getprof', name: el.dataset.name }); });
-$('levelList').addEventListener('click', (e) => { const el = e.target.closest('.lvl'); if (!el || !room || room.host !== myId) return; send({ t: 'level', level: +el.dataset.level }); });
+$('routeChoices').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-level]');
+  if (!button || room?.host !== myId) return;
+  send({ t: 'level', level: Number(button.dataset.level) });
+  closePicker($('routePicker'));
+});
 $('addBotBtn').onclick = () => send({ t: 'addbot' });
 $('delBotBtn').onclick = () => send({ t: 'removebot' });
 $('startBtn').onclick = () => { sfx.init(); send({ t: 'start', level: room.level }); };
@@ -666,41 +728,77 @@ function showTour() {
   const b = $('tourResetBtn'); if (b) b.onclick = () => { send({ t: 'tourReset' }); closeModal(); };
 }
 function showArenaResults(r) {
-  const M = ARENA_MODES[r.mode], mt = myTeam(), win = r.teams.find(t => t.place === 0 && r.winner >= 0) || (r.winner >= 0 ? r.teams[0] : null);
-  const myWin = win && room.arena && room.arena.teams[mt] && win.name === room.arena.teams[mt].name;
-  $('resTitle').textContent = r.aborted ? 'Раунд прерван' : r.winner < 0 ? 'Ничья' : myWin ? 'Победа!' : 'Раунд окончен';
-  $('resLevel').textContent = `${M.icon} ${M.name}${M.sub ? ' · ' + M.sub : ''} · ${fmtTime(r.time)}`;
-  $('resTime').textContent = win ? win.name : '—';
-  $('resRecord').classList.add('hidden'); $('resMedal').innerHTML = '';
-  $('resStats').innerHTML = r.teams.slice(0, 5).map(t => `<div style="border:3px solid ${t.color}"><b>${t.score}</b>${esc(t.name)}</div>`).join('');
+  const M = ARENA_MODES[r.mode];
+  const win = !r.aborted && r.winner >= 0 ? r.teams.find(t => t.place === 0) : null;
+  const mine = r.teams.find(t => t.members.some(p => p.id === myId))
+    || (me && r.teams.find(t => t.members.some(p => p.name === me.name)));
+  const myWin = !!win && mine === win;
+  $('results').dataset.art = myWin ? 'finish' : 'landing';
+  if (myWin) sfx.fanfare();
+  $('resTitle').textContent = r.aborted ? 'Раунд прерван' : !win ? 'Ничья' : myWin ? 'Победа!' : 'Раунд окончен';
+  $('resLevel').textContent = `${M.name}${M.sub ? ' · ' + M.sub : ''}`;
+  $('resMetricLabel').textContent = 'Время раунда';
+  $('resTime').textContent = fmtTime(r.time);
+  $('resRecord').classList.add('hidden');
+  $('resMedal').textContent = '';
+  if (win) {
+    $('resMetricLabel').textContent = mine ? 'Место экипажа' : 'Победитель';
+    $('resTime').textContent = mine ? `${mine.place + 1} из ${r.teams.length}` : win.name;
+    $('resTime').classList.toggle('team-name', !mine);
+    $('resMedal').textContent = mine && !myWin ? `Победитель — ${win.name} · ${fmtTime(r.time)}` : `Время раунда · ${fmtTime(r.time)}`;
+  }
+  $('resStats').innerHTML = r.teams.slice(0, 5).map(t => `<div class="team-score" style="--team-color:${t.color}"><b>${t.score}</b>${esc(t.name)}</div>`).join('');
   const aw = [];
   const all = r.teams.flatMap(t => t.members);
   const best = all.slice().sort((a, b) => b.kos - a.kos)[0], sleepy = all.slice().sort((a, b) => b.faints - a.faints)[0];
   if (best && best.kos) aw.push(`<div class="award">☠️ <b>Главный газовщик:</b> ${esc(best.name)}, вырубил ${best.kos} ${plural(best.kos, 'раз', 'раза', 'раз')}</div>`);
   if (sleepy && sleepy.faints) aw.push(`<div class="award">😵 <b>Слабый нос:</b> ${esc(sleepy.name)}, в отключке ${sleepy.faints} ${plural(sleepy.faints, 'раз', 'раза', 'раз')}</div>`);
   $('resAwards').innerHTML = aw.join('');
-  $('resTour').innerHTML = '<h3>Турнирная таблица</h3>' + tourTable(r.tour, true); $('resTour').classList.remove('hidden');
-  const isHost = room && room.host === myId;
-  $('againBtn').textContent = 'Следующий раунд'; $('nextBtn').classList.add('hidden'); $('resTourReset').classList.toggle('hidden', !isHost);
-  $('resBtns').classList.toggle('hidden', !isHost); $('resWait').classList.toggle('hidden', isHost);
+  $('resTourTable').innerHTML = tourTable(r.tour, true);
+  $('resTour').classList.remove('hidden');
+  $('againBtn').textContent = 'Следующий раунд'; $('nextBtn').classList.add('hidden');
   coinsAward();
 }
 $('resTourReset').onclick = () => send({ t: 'tourReset' });
 function showResults() {
   const r = lastResults; if (!r) return;
-  sfx.stopAll(); sfx.fanfare();
+  lastResults = null;
+  sfx.stopAll();
+  // Keep the finish-line achievements with the score after their HUD notices expire.
+  const achievements = [...$('achToasts').querySelectorAll('.ach-toast:not(.out)')].map(toast => {
+    const item = toast.cloneNode(true);
+    toast.remove();
+    item.className = 'res-achievement';
+    return item;
+  });
+  $('resAchievements').replaceChildren(...achievements);
+  $('resScroll').scrollTop = 0;
+  $('resScroll').focus({ preventScroll: true });
+  $('results').onkeydown = e => {
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.stopPropagation();
+  };
+  $('resTime').classList.remove('team-name');
   if (r.arena) { showArenaResults(r); return; }
-  $('resTour').classList.add('hidden'); $('nextBtn').classList.remove('hidden'); $('resTourReset').classList.add('hidden'); $('againBtn').textContent = 'Ещё раз';
+  $('resTour').classList.add('hidden'); $('nextBtn').classList.remove('hidden'); $('againBtn').textContent = 'Ещё раз';
   const endless = !!r.endless;
-  $('resTitle').textContent = endless ? (r.daily ? 'Задание дня' : 'Плот всё') : 'Финиш';
-  $('resLevel').textContent = endless ? `${r.daily ? DAILY_INFO.name : ENDLESS_INFO.name}, ${fmtTime(r.time)} в пути` : `${r.level + 1}. ${LEVELS[r.level].name}`;
+  const finished = !endless && !r.aborted;
+  $('results').dataset.art = finished ? 'finish' : 'landing';
+  if (finished) sfx.fanfare();
+  $('resTitle').textContent = r.aborted ? 'Заплыв прерван' : endless ? 'Заплыв окончен' : 'Финиш!';
+  $('resLevel').textContent = endless ? `${r.daily ? DAILY_INFO.name : ENDLESS_INFO.name} · ${fmtTime(r.time)} в пути` : `${r.level + 1}. ${LEVELS[r.level].name}`;
+  $('resMetricLabel').textContent = endless ? 'Дистанция' : 'Время экипажа';
   $('resTime').textContent = endless ? fmtDist(r.dist) : fmtTime(r.time);
+  $('resRecord').textContent = r.daily ? 'Новый рекорд дня' : endless ? 'Новый рекорд дистанции' : 'Новый рекорд трассы';
   $('resRecord').classList.toggle('hidden', !r.isRecord);
-  if (endless) $('resMedal').innerHTML = me && me.endlessBest ? `<span class="note" style="margin:0">Ваш лучший результат: ${fmtDist(me.endlessBest)}</span>` : '';
-  else {
-    const md = medalFor(r.level, r.time), mt = medalTimes(r.level);
+  $('resMedal').textContent = '';
+  if (endless) {
+    const day = me?.data.daily;
+    const best = r.daily ? (day && day.date === room?.daily?.date ? day.best : 0) : me?.endlessBest;
+    if (best) $('resMedal').textContent = `Личный рекорд · ${fmtDist(best)}`;
+  } else if (finished) {
+    const md = r.medal || medalFor(r.level, r.time), mt = medalTimes(r.level);
     const target = md === 2 ? mt.gold : mt.silver;
-    $('resMedal').innerHTML = `<span class="disc m${md}"></span>${['', 'Бронза', 'Серебро', 'Золото'][md]}` + (md < 3 ? ` <span class="note" style="margin:0">до ${md === 2 ? 'золота' : 'серебра'} не хватило ${(r.time - target).toFixed(1)} с</span>` : '');
+    $('resMedal').innerHTML = `<span class="disc m${md}" aria-hidden="true"></span>${['', 'Бронза', 'Серебро', 'Золото'][md]}` + (md < 3 ? ` <span class="note">До ${md === 2 ? 'золота' : 'серебра'} не хватило ${(r.time - target).toFixed(1)} с</span>` : '');
   }
   const cr = r.crashes || {}, total = (cr.pop || 0) + (cr.smash || 0) + (cr.bite || 0);
   const shits = r.team.reduce((a, t) => a + t.shits, 0), ejects = r.team.reduce((a, t) => a + t.ejects, 0), faints = r.team.reduce((a, t) => a + (t.faints || 0), 0);
@@ -716,10 +814,7 @@ function showResults() {
   aw.push(`<div class="award">🤝 <b>Синхронных пуков:</b> ${r.syncs}${r.bestSync ? `, лучший на ${r.bestSync}` : ''}</div>`);
   if (!r.isRecord && r.record) aw.push(`<div class="award">🏆 <b>Рекорд:</b> ${endless ? fmtDist(r.record.dist) : fmtTime(r.record.time)}, ${esc(r.record.names.join(', '))}</div>`);
   $('resAwards').innerHTML = aw.join('');
-  const isHost = room && room.host === myId;
   $('nextBtn').textContent = r.level + 1 === ENDLESS ? 'Бесконечный сплав' : r.level === ENDLESS ? 'С первой трассы' : r.level === DAILY ? 'Бесконечный сплав' : 'Следующая трасса';
-  $('resBtns').classList.toggle('hidden', !isHost);
-  $('resWait').classList.toggle('hidden', isHost);
   coinsAward();
 }
 
@@ -944,6 +1039,9 @@ const typing = () => document.activeElement && document.activeElement.tagName ==
 let escTime = 0;
 addEventListener('keydown', (e) => {
   if (typing()) return;
+  if (['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code) &&
+      e.target instanceof Element && e.target.closest('button, summary, select, a[href]') &&
+      (!joined || phase === 'lobby' || phase === 'results' || modalKind)) return;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) toggleMute();
   if (e.code === 'Escape') {
@@ -974,7 +1072,20 @@ cv.addEventListener('wheel', (e) => { e.preventDefault(); camDist = clamp(camDis
 cv.addEventListener('dblclick', () => { camYawOff = 0; camPitch = CAM_DEF.pitch; camDist = CAM_DEF.dist; });
 cv.addEventListener('contextmenu', (e) => e.preventDefault());
 const touches = new Map();
-cv.addEventListener('touchstart', (e) => { e.preventDefault(); sfx.init(); $('touchHint').classList.remove('hidden'); for (const t of e.changedTouches) touches.set(t.identifier, { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, left: t.clientX < innerWidth / 2 }); updTouch(); }, { passive: false });
+let touchHintSeen = false;
+cv.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  sfx.init();
+  if (!touchHintSeen && joined && (phase === 'race' || phase === 'count')) {
+    touchHintSeen = true;
+    $('touchHint').classList.remove('hidden');
+    setTimeout(() => $('touchHint').classList.add('hidden'), 4500);
+  }
+  for (const t of e.changedTouches) {
+    touches.set(t.identifier, { x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, left: t.clientX < innerWidth / 2 });
+  }
+  updTouch();
+}, { passive: false });
 cv.addEventListener('touchmove', (e) => { e.preventDefault(); for (const t of e.changedTouches) { const o = touches.get(t.identifier); if (o) { o.x = t.clientX; o.y = t.clientY; } } updTouch(); }, { passive: false });
 const tend = (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); updTouch(); };
 cv.addEventListener('touchend', tend); cv.addEventListener('touchcancel', tend);
@@ -1159,7 +1270,7 @@ function playEvent(e) {
     case 'count': roundCoins = 0; clearMess(); clearShots(); for (const rv of arenaRVs.values()) { rv.disp.init = false; rv.group.visible = true; } break;
     case 'sync': P.syncMult = 1 + 0.22 * (e.n - 1); sfx.sync(e.n); if (e.n >= 3) toast(`Синхронный пук ×${e.n}!`, 'Вот это командная работа', 'sm gas', 1100); break;
     case 'cp': sfx.ding(); toast(levelIdx >= ENDLESS ? `${fmtDist(lastS)}!` : `Чекпоинт ${e.n} из ${e.of}`, 'Если что, начнём отсюда', 'sm', 1300); break;
-    case 'go': sfx.beep(true); toast('Пукай!', 'только все вместе', 'gas'); $('count').classList.add('hidden'); break;
+    case 'go': sfx.beep(true); $('count').classList.add('hidden'); break;
     case 'bump': sfx.bump(e.mag); splash(mainRV.group.position.x, wy, mainRV.group.position.z, 10 * e.mag + 4, 0.6); break;
     // --- арена
     case 'abump': {
@@ -1586,7 +1697,15 @@ function frameRace(t, dt, dtReal) {
 function countdown(sn, predT) {
   if (sn.ph === 'count') {
     const c = Math.ceil(-(sn.rt + (predT - sn.T)));
-    if (c >= 1 && c <= 3) { $('count').classList.remove('hidden'); if (c !== lastCountShown) { $('count').textContent = c; sfx.beep(false); lastCountShown = c; } }
+    if (c >= 1 && c <= 3 && c !== lastCountShown && joined && room) {
+      const mode = room.arena?.mode;
+      $('countTitle').textContent = mode ? ARENA_MODES[mode].name : routeInfo(room.level).title;
+      $('countHint').textContent = mode ? modeGoalText(mode) : room.level >= ENDLESS ? 'Уйдите как можно дальше' : 'Доберитесь до финиша';
+      $('countNumber').textContent = c;
+      $('count').classList.remove('hidden');
+      sfx.beep(false);
+      lastCountShown = c;
+    }
     $('timer').textContent = fmtTime(0);
   } else lastCountShown = null;
 }
@@ -1725,6 +1844,7 @@ function updateBubbles() {
   }
 }
 
+const characterMotionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
 function animateHippo(h, { pos, vel, f, heat, hot, stun, faint, off, t, dt, R, waterY, spray, rv }) {
   const o = h.obj, U = o.userData, disp = rv.disp, raftGroup = rv.group, center = isCenter(h.seat), rr = center ? 0 : rimR(rv.S, pos);
   if (U.head.userData.hat && U.head.userData.hat.userData.spin) U.head.userData.hat.userData.spin.rotation.y += dt * (f ? 30 : 4);
@@ -1756,31 +1876,43 @@ function animateHippo(h, { pos, vel, f, heat, hot, stun, faint, off, t, dt, R, w
   const crawl = Math.abs(vel) > 0.25 && !faint;
   const inner = U.inner;
   const burp = clamp(1 - (t - h.burpT) / 0.7, 0, 1), rumble = clamp(1 - (t - h.rumbleT) / 1.4, 0, 1);
+  const motion = characterMotionQuery?.matches ? 0.15 : 1;
+  const breath = Math.sin(t * 2.45 + h.jit) * motion, effort = f ? 1 : 0;
+  const pant = hot ? 1 : clamp((heat - 0.58) / 0.42, 0, 1);
+  const turnTarget = clamp(R.w / 3.8, -1, 1), follow = 1 - Math.exp(-dt * 8);
+  h.turnLean = lerp(h.turnLean || 0, turnTarget, follow);
+  const turn = h.turnLean;
   if (f) {
-    inner.position.set((Math.random() - 0.5) * 0.05, 0, (Math.random() - 0.5) * 0.05);
-    U.cheeks.scale.set(1.08 + Math.sin(t * 38) * 0.05, 0.94, 1.05);
+    inner.position.set(Math.sin(t * 20 + h.jit) * 0.016 * motion, 0.015, Math.sin(t * 16 + h.jit) * 0.018 * motion);
+    U.cheeks.scale.set(1.08 + Math.sin(t * 20) * 0.045 * motion, 0.94, 1.05);
     U.chest.rotation.x = 0.42;
-    U.head.rotation.x = 0.35 + Math.sin(t * 30) * 0.05;
+    U.head.rotation.x = 0.06 + Math.sin(t * 18 + h.jit) * 0.035 * motion;
   } else {
-    inner.position.set(0, Math.abs(Math.sin(t * 2.6 + h.jit)) * 0.03, 0);
+    inner.position.set(0, (breath + 1) * 0.014, 0);
     U.cheeks.scale.set(1, 1, 1);
     U.chest.rotation.x = 0.28;
-    U.head.rotation.x = 0.12 + Math.sin(t * 1.3 + h.jit) * 0.05;
+    U.head.rotation.x = -0.10 + breath * 0.037 - pant * 0.12;
   }
   // выстрел: попа резко сжимается, бегемота подбрасывает
   const shotK = clamp(1 - (t - (h.shotT || -9)) / 0.25, 0, 1);
   if (shotK > 0) { U.cheeks.scale.set(1 - 0.25 * shotK, 1 + 0.2 * shotK, 1 - 0.3 * shotK); inner.position.y += 0.12 * shotK; }
   // урчание: живот подрагивает, бегемот ёрзает
-  if (rumble > 0) { const w = Math.sin(t * 34) * 0.04 * rumble; U.chest.scale.set(1 + w, 1 - w * 0.5, 1 + w); inner.rotation.z = Math.sin(t * 9) * 0.05 * rumble; } else U.chest.scale.set(1, 1, 1);
+  const belly = breath * 0.017 + Math.sin(t * 28) * 0.035 * rumble * motion;
+  U.chest.scale.set(1 + belly + effort * 0.027, 1 - belly * 0.5, 1 + belly);
+  U.chest.rotation.z = turn * 0.15;
   // отрыжка: голова дёргается вверх, рот открыт
-  if (burp > 0) { U.head.rotation.x -= Math.sin(burp * Math.PI) * 0.5; U.mouth.scale.set(0.16, 0.02 + 0.09 * burp, 0.05); } else U.mouth.scale.set(0.16, 0.02, 0.05);
+  if (burp > 0) U.head.rotation.x -= Math.sin(burp * Math.PI) * 0.5;
+  U.jaw.rotation.x = 0.09 + (faint ? 0.29 : 0.04 * breath + pant * (0.25 + 0.10 * Math.sin(t * 6) * motion) + burp * 0.57);
+  U.muzzle.scale.x = 0.49 + effort * 0.035 + pant * 0.01;
+  U.muzzle.scale.y = 0.225 + effort * 0.019;
+  U.muzzle.material.color.lerpColors(U.snoutBase, U.blush, pant * 0.20);
+  inner.rotation.z = turn * 0.12 + Math.sin(t * 9) * 0.05 * rumble;
   // перебирание руками
-  if (crawl) { const w = t * 11; U.arms[0].rotation.x = Math.max(0, Math.sin(w)) * 0.9; U.arms[1].rotation.x = Math.max(0, -Math.sin(w)) * 0.9; inner.rotation.z = Math.sin(w) * 0.08; }
-  else { U.arms[0].rotation.x *= 0.8; U.arms[1].rotation.x *= 0.8; if (rumble <= 0) inner.rotation.z *= 0.8; }
+  if (crawl) { const w = t * 11; U.arms[0].rotation.x = Math.max(0, Math.sin(w)) * 0.9; U.arms[1].rotation.x = Math.max(0, -Math.sin(w)) * 0.9; inner.rotation.z += Math.sin(w) * 0.08; }
+  else { U.arms[0].rotation.x *= 1 - follow; U.arms[1].rotation.x *= 1 - follow; }
   if (stun && !faint) { inner.rotation.z = Math.sin(t * 20) * 0.12; U.head.rotation.x = 0.6; }
   // обморок: глаза-крестики, звёздочки, голова свесилась набок
   for (const x of U.xEyes) x.visible = faint;
-  for (const p of U.pupils) p.visible = !faint;
   U.stars.visible = faint;
   if (faint) {
     const k = clamp((t - h.faintT) * 3, 0, 1);
@@ -1788,12 +1920,28 @@ function animateHippo(h, { pos, vel, f, heat, hot, stun, faint, off, t, dt, R, w
     inner.rotation.z = Math.sin(t * 1.6 + h.jit) * 0.12 * k; inner.rotation.x = -0.25 * k;
     U.stars.rotation.y += dt * 4; U.stars.position.y = 0.85 + Math.sin(t * 5) * 0.04;
     U.arms[0].rotation.x = U.arms[1].rotation.x = -0.3 * k;
-  } else { U.head.rotation.z *= 0.8; if (Math.abs(inner.rotation.x) > 0.001 && R.status !== 1) inner.rotation.x *= 0.8; }
-  // моргание
-  h.blink -= dt; const blinking = h.blink < 0.12 || faint; if (h.blink < 0) h.blink = 2 + Math.random() * 4;
-  for (const l of U.lids) l.scale.y = blinking ? 0.11 : 0.06;
+  } else { U.head.rotation.z = -turn * 0.23 + breath * 0.02; if (Math.abs(inner.rotation.x) > 0.001 && R.status !== 1) inner.rotation.x *= 1 - follow; }
+  U.head.rotation.y = faint ? 0 : -turn * 0.29 + Math.sin(t * 0.83 + h.jit) * 0.07;
+  h.blink -= dt;
+  if (h.blink <= 0) h.blink = 3.7 + Math.sin(t * 0.7 + h.jit) * 1.35;
+  const blink = faint ? 0 : Math.max(0, 1 - Math.abs(h.blink - 0.09) / 0.09);
+  const gaze = turn * 0.44 + Math.sin(t * 0.78 + h.jit) * 0.10;
+  for (let i = 0; i < 2; i++) {
+    const side = i * 2 - 1, eye = U.eyes[i], brow = U.brows[i], ear = U.ears[i];
+    eye.visible = !U.masked && blink < 0.84;
+    eye.rotation.y = faint ? Math.PI : gaze - side * 0.055;
+    eye.rotation.x = faint ? 0 : -0.13 - pant * 0.14;
+    eye.scale.y = 0.106 * (1 - 0.92 * blink) * (1 - 0.16 * effort + 0.13 * pant);
+    brow.position.y = 0.431 + pant * 0.021 - blink * 0.062 + side * (turn * 0.012 + breath * 0.008);
+    brow.rotation.z = side * (-0.09 + effort * 0.48 - pant * 0.18) + turn * 0.20 + breath * 0.055;
+    const flick = Math.max(0, Math.sin(t * 1.22 + h.jit + side) - 0.82) * Math.sin(t * 14 + side);
+    ear.rotation.z = -side * (0.48 + effort * 0.27 + pant * 0.17 + flick * motion) + turn * 0.22;
+    ear.rotation.x = 0.06 + effort * 0.25 - pant * 0.14;
+    U.arms[i].rotation.z = side * (0.035 + Math.abs(turn) * 0.33) + turn * 0.16;
+    U.legs[i].rotation.x = (faint ? 0 : Math.abs(turn) * (0.12 + side * turn * 0.11) + effort * 0.06);
+  }
   // перегрев: попа краснеет и светится
-  const glow = hot ? 1.6 + Math.sin(t * 25) * 0.5 : Math.pow(heat, 2) * 1.4;
+  const glow = hot ? 1.45 + Math.sin(t * 5) * 0.14 * motion : Math.pow(heat, 2) * 1.4;
   U.cheekMat.emissiveIntensity = glow;
   U.cheekMat.emissive.setRGB(1, hot ? 0.35 : 0.22, 0.05);
   // взлёт при лопании

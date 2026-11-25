@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Пукоплот</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦛</text></svg>">
+<meta name="theme-color" content="#174d4b">
+<link rel="icon" type="image/png" href="art/club-icon.png">
 <link rel="stylesheet" href="style.css">
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 </head>
@@ -18,7 +19,7 @@
     <img src="art/canyon.webp" alt="" fetchpriority="high">
   </picture>
   <div class="tube join-card">
-    <h1 class="logo">Пукоплот</h1>
+    <div class="join-brand"><img src="art/club-icon.png" alt="" width="52" height="52"><h1 class="logo">Пукоплот</h1></div>
     <p class="lead">До пяти бегемотов на одном плоту. Рули по каньону и пукай в нужную сторону!</p>
     <label class="field"><span>Как зовут бегемота</span>
       <input id="nameInput" maxlength="16" placeholder="Гоша" autocomplete="off">
@@ -28,7 +29,7 @@
     </label>
     <div class="field"><span id="shirtLabel">Майка экипажа</span></div>
     <div id="shirtPick" class="shirts" role="group" aria-labelledby="shirtLabel"></div>
-    <button id="joinBtn" class="btn primary big">Залезть на плот</button>
+    <button id="joinBtn" class="btn primary big" disabled>Залезть на плот</button>
     <p id="authErr" class="err hidden"></p>
     <p id="connState" class="note" role="status">Подключаюсь к серверу…</p>
     <p class="note join-profile">Имя сохраняет твой прогресс на этом сервере. PIN защищает профиль.</p>
@@ -43,6 +44,19 @@
   </header>
   <div class="lobby-scroll">
     <div class="row me-row"><button class="btn sm" id="profBtn">🏅 Профиль</button><button class="btn sm" id="wardBtn">👒 Гардероб</button><button class="btn sm gift-btn" id="shopBtn">🎁 Подарки</button><button class="btn sm" id="topBtn">🏆 Рекорды</button></div>
+    <details id="modePicker" class="lobby-fold">
+      <summary>Режим <strong id="modeName">Сплав</strong></summary>
+      <div id="modeChips" class="modes"></div>
+    </details>
+    <h3 id="trackTitle" class="visually-hidden">Маршрут</h3>
+    <div id="arenaBox" class="hidden"></div>
+    <div id="levelList">
+      <article id="routeCard" class="route-card" aria-labelledby="routeName"></article>
+      <details id="routePicker" class="lobby-fold">
+        <summary>Атлас маршрутов</summary>
+        <div id="routeChoices"></div>
+      </details>
+    </div>
     <h3>Экипаж</h3>
     <div id="playerList" class="players"></div>
     <div id="botBtns" class="row bot-row hidden"><button class="btn" id="addBotBtn">Добавить бота</button><button class="btn ghost" id="delBotBtn">Убрать бота</button></div>
@@ -54,8 +68,6 @@
       </div>
       <div id="myLook" class="my-look"></div>
     </details>
-    <h3>Режим</h3>
-    <div id="modeChips" class="modes"></div>
     <details class="lobby-fold">
       <summary>Правила заезда</summary>
       <div id="rulesBox" class="rules"></div>
@@ -67,9 +79,6 @@
         <div id="addrList"></div>
       </div>
     </details>
-    <h3 id="trackTitle">Трасса</h3>
-    <div id="arenaBox" class="hidden"></div>
-    <div id="levelList" class="levels"></div>
   </div>
   <footer class="lobby-foot">
     <button id="startBtn" class="btn primary big">Поплыли!</button>
@@ -96,29 +105,54 @@
   <summary>Реплики</summary>
   <div id="emotes" class="hidden"></div>
 </details>
-<div id="count" class="hidden"></div>
+<div id="count" class="hidden">
+  <div class="start-ticket">
+    <b id="countNumber"></b>
+    <div><strong id="countTitle"></strong><span id="countHint"></span></div>
+  </div>
+</div>
 <div id="coinPops"></div>
 <button id="ultHud" class="hidden" title="Мега-пук (Q, на геймпаде Y)"><i id="ultFill"></i><span class="ub">💥</span><b id="ultTxt"></b><kbd>Q</kbd></button>
 <div id="boxOpen" class="hidden"></div>
 
 <!-- Результаты -->
-<section id="results" class="screen hidden">
+<section id="results" class="screen hidden" aria-labelledby="resTitle">
   <div class="tube res-card">
-    <h2 class="logo" id="resTitle">Финиш</h2>
-    <p id="resLevel" class="note"></p>
-    <div id="resTime" class="res-time"></div>
-    <div id="resMedal" class="medal"></div>
-    <div id="resRecord" class="badge hidden">Новый рекорд трассы</div>
-    <div id="resStats" class="res-stats"></div>
-    <div id="resAwards" class="awards"></div>
-    <div id="resTour" class="hidden"></div>
-    <div id="resBtns" class="row">
-      <button id="againBtn" class="btn primary">Ещё раз</button>
-      <button id="nextBtn" class="btn">Следующая трасса</button>
-      <button id="lobbyBtn" class="btn ghost">В лобби</button>
-      <button id="resTourReset" class="btn ghost hidden">Сбросить турнир</button>
+    <div id="resScroll" tabindex="0" role="region" aria-labelledby="resTitle">
+      <div class="res-art" aria-hidden="true"></div>
+      <header class="res-summary">
+        <div class="res-heading">
+          <p id="resLevel"></p>
+          <h2 id="resTitle">Финиш</h2>
+        </div>
+        <div class="res-metric">
+          <span id="resMetricLabel"></span>
+          <strong id="resTime"></strong>
+        </div>
+        <div class="res-honors">
+          <div id="resMedal" class="medal"></div>
+          <div id="resRecord" class="hidden">Новый рекорд трассы</div>
+        </div>
+      </header>
+      <div class="res-details">
+        <div id="resStats" class="res-stats"></div>
+        <div id="resAchievements"></div>
+        <div id="resAwards" class="awards"></div>
+        <section id="resTour" class="hidden">
+          <h3>Турнирная таблица</h3>
+          <div id="resTourTable"></div>
+        </section>
+      </div>
     </div>
-    <p id="resWait" class="note hidden">Что дальше, решает хост.</p>
+    <footer class="res-footer">
+      <div id="resBtns" class="row">
+        <button id="againBtn" class="btn primary">Ещё раз</button>
+        <button id="nextBtn" class="btn">Следующая трасса</button>
+        <button id="lobbyBtn" class="btn ghost">В лобби</button>
+        <button id="resTourReset" class="btn ghost hidden">Сбросить турнир</button>
+      </div>
+      <p id="resWait" class="note hidden">Что дальше, решает хост.</p>
+    </footer>
   </div>
 </section>
 
@@ -147,6 +181,18 @@
 <div id="touchHint" class="hidden">Слева проведите влево или вправо — ползти, справа — пукнуть</div>
 <div id="disconnected" class="hidden">Связь с сервером потеряна. Переподключаюсь…</div>
 
-<script type="module" src="client.js"></script>
+<script type="module">
+  import('./client.js').catch(error => {
+    const message = error.name === 'WebGLUnavailable'
+      ? 'Для 3D-сцены нужен WebGL 2. Включите аппаратное ускорение или откройте игру в другом браузере.'
+      : 'Не удалось загрузить игру. Проверьте связь с сервером и повторите попытку.';
+    console.error(error);
+    document.getElementById('connState').textContent = message;
+    const retry = document.getElementById('joinBtn');
+    retry.textContent = 'Попробовать снова';
+    retry.disabled = false;
+    retry.onclick = () => location.reload();
+  });
+</script>
 </body>
 </html>

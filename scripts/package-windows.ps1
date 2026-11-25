@@ -58,7 +58,7 @@ try {
 
     Push-Location -LiteralPath $src
     try {
-        & $compiler build --compile --target=bun-windows-x64 ./server.mjs --outfile Pukoplot.exe
+        & $compiler build --compile --target=bun-windows-x64 --windows-icon=./public/art/club-icon.ico --windows-title=Пукоплот --windows-description="Кооперативный сплав на плоту" ./server.mjs --outfile Pukoplot.exe
         if ($LASTEXITCODE -ne 0) { throw 'Bun compilation failed.' }
     } finally {
         Pop-Location

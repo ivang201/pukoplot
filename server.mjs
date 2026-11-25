@@ -47,6 +47,7 @@ let levelIdx = 0, seed = 1;
 let W = createWorld(buildTrack(0));
 let raceStart = 0, countEnd = 0, lives = 0, gameOverAt = 0, lastS = 0, goT = 0;
 let race = null;                          // статистика текущего заезда
+let currentResults = null;
 let rules = { ...DEFAULT_RULES };
 // Арена: режим, мир, очки команд, турнирная таблица (живёт, пока хост не сбросит)
 let gameMode = 'race', AW = null, arenaTeams = [], score = [], resetBallAt = 0, arenaStat = null;
@@ -558,8 +559,7 @@ function finishArena(T, winTeam = -1, aborted = false) {
     tour: tourOut(),
   };
   store.addRace({ mode: 'arena-' + gameMode, level: -1, time: T - raceStart, dist: 0, team: arenaPlayers().map(p => p.name), crashes: 0 }).catch(() => {});
-  broadcast({ t: 'results', r: res });
-  sendRoom();
+  publishResults(res);
   flushProfiles();
 }
 function tourOut() { return { rounds: tour.rounds, rows: Object.values(tour.rows).sort((a, b) => b.pts - a.pts || b.wins - a.wins || b.kos - a.kos) }; }
@@ -579,6 +579,7 @@ function startArenaCountdown() {
 //  Фазы
 // ------------------------------------------------------------
 function startCountdown() {
+  currentResults = null;
   if (isArenaMode(gameMode)) { startArenaCountdown(); return; }
   if (!racers().length) return;
   if (levelIdx === ENDLESS) setLevel(ENDLESS, (Math.random() * 1e9) | 0);
@@ -634,7 +635,7 @@ function finishRace(T) {
   flushProfiles();
 }
 
-function finishEndless(T) {
+function finishEndless(T, aborted = false) {
   const dist = Math.round(W.raft.maxS), time = T - raceStart;
   phase = 'results';
   const daily = levelIdx === DAILY, date = localDate(), key = daily ? `daily:${date}` : 'endless';
@@ -652,7 +653,7 @@ function finishEndless(T) {
     markDirty(p);
   }
   store.addRace({ mode: daily ? 'daily' : 'endless', level: levelIdx, time, dist, team: team.map(t => t.name), crashes: race.crashTotal }).catch(() => {});
-  sendResults({ time, dist, isRecord, record: records[key], endless: true, daily, mut: daily ? dailyMutator(seed).id : null });
+  sendResults({ time, dist, isRecord, record: records[key], endless: true, daily, aborted, mut: daily ? dailyMutator(seed).id : null });
   flushProfiles();
 }
 
@@ -662,6 +663,10 @@ function sendResults(extra) {
     team: racers().map(p => { const s = race.p[p.id] || {}; return { id: p.id, name: p.name, skin: p.skin, blame: s.blame || 0, fart: +(s.fartTime || 0).toFixed(1), shits: (s.shits || 0) + (s.misfires || 0), ejects: s.ejects || 0, overheats: s.overheats || 0, faints: s.faints || 0, gassed: s.gassed || 0 }; }),
     culprit: top('blame'), farter: top('fartTime'), shitter: top('shits'), flyer: top('ejects'), hot: top('overheats'), gasser: top('gassed'), sleeper: top('faints'),
   };
+  publishResults(r);
+}
+function publishResults(r) {
+  currentResults = r;
   broadcast({ t: 'results', r });
   sendRoom();
 }
@@ -760,6 +765,7 @@ async function onMessage(conn, data) {
       if (!p.named) { p.named = true; p.joinOrder = nextId++; }
       if (!hostId || !players.has(hostId) || !players.get(hostId).named || players.get(hostId).isBot) hostId = p.id;
       assignSeats(); sendRoom(); sendMe(p);
+      if (phase === 'results' && currentResults) conn.send(JSON.stringify({ t: 'results', r: currentResults }));
       if (welcome) conn.send(JSON.stringify({ t: 'welcomeGift', coins: welcome }));
       broadcast({ t: 'ev', k: 'join', name: p.name });
       break;
@@ -802,7 +808,13 @@ async function onMessage(conn, data) {
       }
       break;
     case 'mode': if (isHost && phase === 'lobby') { setMode(m.mode); sendRoom(); } break;
-    case 'tourReset': if (isHost && phase !== 'race') { tour = { rounds: 0, rows: {} }; sendRoom(); } break;
+    case 'tourReset':
+      if (isHost && phase !== 'race') {
+        tour = { rounds: 0, rows: {} };
+        if (phase === 'results' && currentResults?.arena) currentResults.tour = tourOut();
+        sendRoom();
+      }
+      break;
     case 'rules': if (isHost && phase === 'lobby') {
       const r = m.rules || {};
       rules = {
@@ -818,7 +830,7 @@ async function onMessage(conn, data) {
     case 'again': if (isHost && phase === 'results') { phase = 'lobby'; assignSeats(); startCountdown(); } break;
     case 'next': if (isHost && phase === 'results') { phase = 'lobby'; if (!isArenaMode(gameMode)) setLevel(levelIdx >= ENDLESS ? (levelIdx === ENDLESS ? 0 : ENDLESS) : levelIdx + 1); assignSeats(); startCountdown(); } break;
     case 'lobby': if (isHost && phase === 'results') backToLobby(); break;
-    case 'abort': if (isHost && (phase === 'race' || phase === 'count')) { if (isArenaMode(gameMode) && phase === 'race') finishArena(now(), -1, true); else if (levelIdx >= ENDLESS && !isArenaMode(gameMode) && phase === 'race') finishEndless(now()); else backToLobby(); } break;
+    case 'abort': if (isHost && (phase === 'race' || phase === 'count')) { if (isArenaMode(gameMode) && phase === 'race') finishArena(now(), -1, true); else if (levelIdx >= ENDLESS && !isArenaMode(gameMode) && phase === 'race') finishEndless(now(), true); else backToLobby(); } break;
     case 'addbot': if (isHost && phase === 'lobby') addBot(); break;
     case 'removebot': if (isHost && phase === 'lobby') removeBot(); break;
     case 'emote': emote(p, m.n | 0, now()); break;

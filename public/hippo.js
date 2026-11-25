@@ -75,11 +75,84 @@ function deform(geo, fn) {
   geo.computeVertexNormals(); return geo;
 }
 const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function pear(v) {
+  const width = 1 + 0.16 * smooth(0.3, -0.9, v.y);
+  v.x *= width; v.z *= width;
+}
+function paintedMap(paint, width = 256) {
+  const c = document.createElement('canvas'); c.width = width; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 256, 128);
+  const oval = (x, y, rx, ry, angle, fill) => {
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, angle, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill();
+  };
+  paint(ctx, oval);
+  const map = new THREE.CanvasTexture(c); map.colorSpace = THREE.SRGBColorSpace; map.wrapS = THREE.RepeatWrapping;
+  return map;
+}
+// На развёртке SphereGeometry взгляд вдоль +Z находится на четверти ширины.
+const eyeMap = paintedMap((ctx, oval) => {
+  ctx.fillStyle = '#fff5df'; ctx.fillRect(0, 0, 256, 128);
+  oval(64, 58, 28, 28, 0, '#594550'); oval(64, 58, 24, 24, 0, '#a86e49');
+  oval(64, 58, 19, 21, 0, '#211e2a'); oval(57, 47, 6, 5, -0.3, '#fffbee');
+  oval(74, 69, 2.5, 2, 0, '#ffdaaa');
+});
+const muzzleMap = paintedMap((ctx, oval) => {
+  for (const side of [-1, 1]) {
+    const x = 64 + side * 28, tilt = -side * 0.42;
+    oval(x, 37, 10, 7.8, tilt, '#d7babb');
+    oval(x, 35.5, 8.5, 6.8, tilt, '#6a5258');
+    oval(x, 34.8, 6.8, 5.1, tilt, '#322c32');
+    for (const [offset, y, size] of [[12, 54, 1.7], [17, 60, 1.4], [6, 61, 1.2]]) {
+      oval(x + side * offset, y, size, size * 0.75, tilt, '#ad9197');
+    }
+  }
+});
 const G = {
   ball: new THREE.SphereGeometry(1, 20, 14),
   ballHi: new THREE.SphereGeometry(1, 28, 20),
+  face: deform(new THREE.SphereGeometry(1, 26, 18), v => {
+    v.x *= 1 + 0.13 * (1 - v.y * v.y) - 0.06 * Math.max(0, v.y);
+  }),
+  muzzle: deform(new THREE.SphereGeometry(1, 40, 24), v => {
+    const crease = Math.exp(-v.x * v.x / 0.045) * Math.max(0, v.z);
+    v.z -= 0.19 * crease; v.y -= 0.10 * crease;
+    v.y += 0.16 * v.x * v.x; v.x *= 1 + 0.10 * Math.max(0, v.z);
+  }),
+  jaw: (() => {
+    const geo = new THREE.SphereGeometry(1, 28, 16), p = geo.attributes.position;
+    const colors = [], lip = new THREE.Color('#fff4e9'), gum = new THREE.Color('#692d41'), tongue = new THREE.Color('#ff9e99'), c = new THREE.Color();
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      c.copy(lip).lerp(gum, smooth(-0.26, 0.01, y)).lerp(tongue, smooth(0.22, 0.7, y) * smooth(0.2, 0.6, z) * (1 - smooth(0.4, 0.7, Math.abs(x))));
+      colors.push(c.r, c.g, c.b);
+      p.setY(i, y + 0.67 * x * x);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); geo.computeVertexNormals(); return geo;
+  })(),
+  tooth: deform(new THREE.SphereGeometry(1, 12, 10), v => {
+    v.x = Math.sign(v.x) * Math.pow(Math.abs(v.x), 0.67) * (0.94 + 0.12 * v.y);
+    v.y = Math.sign(v.y) * Math.pow(Math.abs(v.y), 0.78);
+  }),
+  brow: deform(new THREE.SphereGeometry(1, 14, 8), v => { v.y += 0.52 * (1 - v.x * v.x); }),
+  ear: deform(new THREE.SphereGeometry(1, 16, 12), v => {
+    v.x *= 0.82 + 0.27 * v.y;
+    v.z -= 0.48 * Math.max(0, v.z) * Math.exp(-3 * (v.x * v.x + v.y * v.y));
+  }),
+  paw: (() => {
+    const geo = new THREE.SphereGeometry(1, 24, 16), p = geo.attributes.position;
+    const colors = [], hoof = new THREE.Color('#544956'), nail = new THREE.Color('#d1b3a3'), c = new THREE.Color();
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      const lobes = 0.5 + 0.5 * Math.cos(11 * x);
+      p.setZ(i, z + 0.12 * Math.max(0, z) * lobes);
+      c.copy(hoof).lerp(nail, smooth(0.55, 0.79, z) * smooth(-0.50, -0.16, y) * smooth(0.15, 0.78, lobes));
+      colors.push(c.r, c.g, c.b);
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); geo.computeVertexNormals(); return geo;
+  })(),
   // туловище-груша: шире внизу
-  torso: deform(new THREE.SphereGeometry(1, 36, 28), v => { const k = 1 + 0.16 * smooth(0.3, -0.9, v.y); v.x *= k; v.z *= k; }),
+  torso: deform(new THREE.SphereGeometry(1, 32, 24), pear),
   // попа: одна форма с ложбинкой и складкой снизу
   butt: deform(new THREE.SphereGeometry(1, 48, 36), v => {
     const back = smooth(0.1, -0.6, v.z);                                  // сзади (-Z)
@@ -87,9 +160,9 @@ const G = {
     v.y -= 0.12 * smooth(-0.2, -1, v.y) * (0.6 + 0.4 * Math.abs(v.x));   // «сидячая» складка
     v.x *= 1 + 0.12 * smooth(0.4, -0.6, v.y);                              // шире книзу
   }),
-  shirt: new THREE.SphereGeometry(1, 36, 22, 0, Math.PI * 2, Math.PI * 0.28, Math.PI * 0.5),
-  print: new THREE.SphereGeometry(1, 16, 12, Math.PI / 2 - 0.62, 1.24, Math.PI * 0.34, Math.PI * 0.30),
-  printBack: new THREE.SphereGeometry(1, 16, 12, -Math.PI / 2 - 0.55, 1.1, Math.PI * 0.32, Math.PI * 0.27),
+  shirt: deform(new THREE.SphereGeometry(1, 36, 22, 0, Math.PI * 2, Math.PI * 0.28, Math.PI * 0.5), pear),
+  print: deform(new THREE.SphereGeometry(1, 16, 12, Math.PI / 2 - 0.62, 1.24, Math.PI * 0.34, Math.PI * 0.30), pear),
+  printBack: deform(new THREE.SphereGeometry(1, 16, 12, -Math.PI / 2 - 0.55, 1.1, Math.PI * 0.32, Math.PI * 0.27), pear),
   limb: new THREE.CapsuleGeometry(0.13, 0.42, 6, 12),
   thigh: new THREE.CapsuleGeometry(0.16, 0.36, 6, 12),
   ring: new THREE.TorusGeometry(0.12, 0.022, 8, 24),
@@ -103,11 +176,42 @@ const G = {
   star: (() => { const s = new THREE.Shape(); for (let i = 0; i < 10; i++) { const r = i % 2 ? 0.45 : 1, a = Math.PI / 2 + i * Math.PI / 5; i ? s.lineTo(Math.cos(a) * r, Math.sin(a) * r) : s.moveTo(Math.cos(a) * r, Math.sin(a) * r); } return new THREE.ExtrudeGeometry(s, { depth: 0.3, bevelEnabled: false }); })(),
 };
 const M = {
+  eye: std(0xffffff, { map: eyeMap, roughness: 0.29 }), brow: std(0x453744, { roughness: 0.86 }),
+  paw: std(0xffffff, { vertexColors: true, roughness: 0.72 }),
   dark: std(0x2b2f36), white: std(0xffffff, { roughness: 0.3 }), black: std(0x111111, { roughness: 0.3 }), pink: std(0xd09090), tooth: std(0xfff8e0),
-  stain: std(0x5a3815, { roughness: 0.35 }), mouth: std(0x4a1a22), gold: std(0xf2c14e, { metalness: 0.75, roughness: 0.25 }), metal: std(0xb8c0cc, { metalness: 0.7, roughness: 0.3, map: metalTex().map }),
+  stain: std(0x5a3815, { roughness: 0.35 }), gold: std(0xf2c14e, { metalness: 0.75, roughness: 0.25 }), metal: std(0xb8c0cc, { metalness: 0.7, roughness: 0.3, map: metalTex().map }),
   star: new THREE.MeshBasicMaterial({ color: 0xffe14a }), x: std(0x1a1a1a),
 };
 const shirtMats = SKINS.map(sk => std(sk.shirt, { roughness: 0.92 }));
+const jerseys = SKINS.map(sk => {
+  const map = paintedMap(ctx => {
+    ctx.fillStyle = hex(sk.shirt); ctx.fillRect(0, 0, 256, 128);
+    ctx.fillStyle = 'rgba(33,39,49,.27)'; ctx.fillRect(0, 117, 256, 11);
+    ctx.fillStyle = sk.shirt === 0xf2efe8 ? '#ac594e' : '#f5e4c5';
+    ctx.fillRect(0, 0, 256, 3); ctx.fillRect(0, 120, 256, 3);
+  }, 4);
+  return std(0xffffff, { map, roughness: 0.92 });
+});
+const blush = new THREE.Color(0xf19285);
+let gasmaskMats;
+function gasmaskMaterials() {
+  if (gasmaskMats) return gasmaskMats;
+  const lens = paintedMap((ctx, oval) => {
+    ctx.fillStyle = '#383a39'; ctx.fillRect(0, 0, 256, 128);
+    oval(64, 64, 48, 48, 0, '#d7cec0'); oval(64, 64, 38, 38, 0, '#273c46');
+    oval(64, 64, 32, 32, 0, '#739eb0'); oval(56, 49, 15, 5, -0.65, '#dfeddd');
+  });
+  const filter = paintedMap((ctx, oval) => {
+    ctx.fillStyle = '#4a5352'; ctx.fillRect(0, 0, 256, 128);
+    oval(64, 64, 45, 45, 0, '#b8ad8e'); oval(64, 64, 36, 36, 0, '#70756b');
+    for (const y of [-18, -9, 0, 9, 18]) oval(64, 64 + y, 24 - Math.abs(y) * 0.4, 2.4, 0, '#242e32');
+  });
+  return gasmaskMats = {
+    rubber: std(0x405049, { roughness: 0.84 }),
+    lens: std(0xffffff, { map: lens, roughness: 0.27, metalness: 0.18 }),
+    filter: std(0xffffff, { map: filter, roughness: 0.64, metalness: 0.24 }),
+  };
+}
 
 // Позиции пятен грязи на теле (общие для всех бегемотов)
 const DIRT_SPOTS = (() => {
@@ -133,11 +237,13 @@ export function makeHippo(skinIdx, look = {}) {
   const bodyMat = std(pat ? 0xffffff : B.body, { roughness: B.metal ? 0.28 : B.gloss ? 0.1 : 0.62, metalness: B.metal ? 0.6 : B.gloss ? 0.15 : 0, map: pat ? pat.map : skin.map, normalMap: skin.normalMap, normalScale: new THREE.Vector2(0.4, 0.4) });
   if (pat && pat.glow) { bodyMat.emissive = new THREE.Color(B.pat === 'lava' ? 0xff6a10 : 0xffffff); bodyMat.emissiveMap = pat.glow; bodyMat.emissiveIntensity = B.pat === 'lava' ? 1.6 : 0.9; }
   if (B.glow) { bodyMat.emissive = new THREE.Color(B.glow); bodyMat.emissiveIntensity = 0.35; }
-  const snoutMat = std(B.snout, { roughness: B.gloss ? 0.1 : 0.6, map: skin.map, metalness: B.metal ? 0.5 : 0 });
+  const snoutMat = std(B.snout, { roughness: B.gloss ? 0.18 : 0.65, map: muzzleMap, metalness: B.metal ? 0.38 : 0 });
+  const snoutBase = snoutMat.color.clone();
+  const jawMat = std(B.snout, { vertexColors: true, roughness: 0.65 });
   const cheekMat = bodyMat.clone(); cheekMat.emissive = new THREE.Color(0xff3300); cheekMat.emissiveIntensity = 0; cheekMat.emissiveMap = null;
   const baseCol = new THREE.Color(pat ? 0xffffff : B.body), dirtCol = new THREE.Color(0x6b4a2a);
   const anim = [];          // анимации вещей: fn(t, dt, farting)
-  if (B.anim === 'rainbow') anim.push((t) => { baseCol.setHSL((t * 0.12) % 1, 0.75, 0.62); bodyMat.color.copy(baseCol).lerp(dirtCol, (g.userData.dirtK || 0) * 0.45); snoutMat.color.copy(baseCol).offsetHSL(0.04, 0, 0.08); });
+  if (B.anim === 'rainbow') anim.push((t) => { baseCol.setHSL((t * 0.12) % 1, 0.75, 0.62); bodyMat.color.copy(baseCol).lerp(dirtCol, (g.userData.dirtK || 0) * 0.45); snoutBase.copy(baseCol).offsetHSL(0.04, 0, 0.08); jawMat.color.copy(snoutBase); });
   const mk = (geo, mat, parent, x, y, z, sx, sy, sz) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = true; parent.add(m); return m; };
   const shirtColor = shirtMats[sk];
 
@@ -146,7 +252,7 @@ export function makeHippo(skinIdx, look = {}) {
   for (const sx of [-1, 1]) {
     const leg = new THREE.Group(); leg.position.set(sx * 0.22, 0.18, 0.12); inner.add(leg);
     mk(G.thigh, bodyMat, leg, 0, -0.18, 0.2, 1, 1, 1).rotation.x = 1.0;
-    mk(G.ball, M.dark, leg, 0, -0.5, 0.48, 0.17, 0.09, 0.22);
+    mk(G.paw, M.paw, leg, 0, -0.49, 0.48, 0.18, 0.10, 0.22);
     legs.push(leg);
   }
   // попа над водой
@@ -157,35 +263,44 @@ export function makeHippo(skinIdx, look = {}) {
   // корпус
   const chest = new THREE.Group(); chest.position.set(0, 0.64, 0.02); chest.rotation.x = 0.28; inner.add(chest);
   mk(G.torso, bodyMat, chest, 0, 0, 0, 0.56, 0.6, 0.5);
-  mk(G.shirt, shirtColor, chest, 0, 0, 0, 0.585, 0.615, 0.53);
+  mk(G.shirt, jerseys[sk], chest, 0, 0, 0, 0.585, 0.615, 0.53);
   mk(G.print, printMats[sk], chest, 0, 0, 0, 0.595, 0.625, 0.54);
   mk(G.printBack, printMats[sk], chest, 0, 0, 0, 0.595, 0.625, 0.54);
   for (const sx of [-1, 1]) for (const sz of [1, -1]) { const st = mk(G.strap, shirtColor, chest, sx * 0.27, 0.42, sz * 0.16, 1, 1, 1); st.rotation.x = -sz * 0.45; st.rotation.z = sx * 0.12; }
   // руки держатся за кромку
   const arms = [];
   for (const sx of [-1, 1]) {
-    const sh = new THREE.Group(); sh.position.set(sx * 0.55, 0.92, 0.12); inner.add(sh);
-    mk(G.limb, bodyMat, sh, sx * 0.06, -0.38, 0.04, 1, 1, 1).rotation.z = sx * 0.15;
-    mk(G.ball, M.dark, sh, sx * 0.1, -0.72, 0.08, 0.15, 0.1, 0.17);
+    const sh = new THREE.Group(); sh.position.set(sx * 0.48, 0.96, 0.12); inner.add(sh);
+    mk(G.limb, bodyMat, sh, sx * 0.06, -0.31, 0.04, 1.10, 1, 1.08).rotation.z = sx * 0.28;
+    mk(G.paw, M.paw, sh, sx * 0.15, -0.64, 0.08, 0.15, 0.105, 0.17);
     arms.push(sh);
   }
   // голова
   const head = new THREE.Group(); head.position.set(0, 1.2, 0.28); head.rotation.x = 0.12; inner.add(head);
-  mk(G.ballHi, bodyMat, head, 0, 0.12, -0.02, 0.42, 0.38, 0.44);
-  mk(G.ballHi, snoutMat, head, 0, -0.02, 0.33, 0.47, 0.3, 0.32);
-  for (const sx of [-1, 1]) mk(G.ball, M.dark, head, sx * 0.15, 0.17, 0.56, 0.065, 0.045, 0.05);
-  for (const sx of [-1, 1]) mk(G.ball, M.tooth, head, sx * 0.14, -0.2, 0.55, 0.05, 0.06, 0.04);
-  const mouth = mk(G.ball, M.mouth, head, 0, -0.16, 0.6, 0.16, 0.02, 0.05);
-  const lids = [], pupils = [], xEyes = [];
+  mk(G.face, bodyMat, head, 0, 0.13, -0.03, 0.43, 0.38, 0.42);
+  const muzzle = mk(G.muzzle, snoutMat, head, 0, 0.018, 0.34, 0.49, 0.225, 0.325);
+  const jaw = new THREE.Group(); jaw.position.set(0, -0.111, 0.118); head.add(jaw);
+  mk(G.jaw, jawMat, jaw, 0, -0.033, 0.24, 0.397, 0.122, 0.283);
+  const masked = look.glasses === 'gasmask';
+  jaw.visible = muzzle.visible = !masked;
   for (const sx of [-1, 1]) {
-    mk(G.ball, M.white, head, sx * 0.2, 0.36, 0.2, 0.1, 0.1, 0.09);
-    pupils.push(mk(G.ball, M.black, head, sx * 0.2, 0.37, 0.28, 0.05, 0.055, 0.03));
-    lids.push(mk(G.ball, bodyMat, head, sx * 0.21, 0.42, 0.21, 0.12, 0.06, 0.1));
-    const xg = new THREE.Group(); xg.position.set(sx * 0.2, 0.36, 0.29); xg.visible = false; head.add(xg);
+    const tooth = mk(G.tooth, M.tooth, head, sx * 0.214, -0.144, 0.583, 0.055, 0.087, 0.046);
+    tooth.rotation.set(-0.30, 0, -sx * 0.13);
+    tooth.visible = !masked;
+  }
+  const eyes = [], brows = [], ears = [], xEyes = [];
+  for (const sx of [-1, 1]) {
+    const eye = mk(G.ball, M.eye, head, sx * 0.207, 0.355, 0.225, 0.122, 0.106, 0.085);
+    eye.castShadow = false; eye.visible = !masked; eyes.push(eye);
+    const brow = mk(G.brow, M.brow, head, sx * 0.211, 0.442, 0.234, 0.123, 0.034, 0.076);
+    brow.rotation.z = -sx * 0.13; brows.push(brow);
+    const xg = new THREE.Group(); xg.position.set(sx * 0.207, 0.355, 0.311); xg.visible = false; head.add(xg);
     for (const r of [0.8, -0.8]) { const b = mk(G.box, M.x, xg, 0, 0, 0, 0.16, 0.03, 0.02); b.rotation.z = r; }
     xEyes.push(xg);
-    const ear = mk(G.ball, bodyMat, head, sx * 0.3, 0.46, -0.08, 0.1, 0.12, 0.06); ear.rotation.z = sx * 0.4;
-    mk(G.ball, M.pink, head, sx * 0.3, 0.46, -0.05, 0.06, 0.08, 0.03).rotation.z = sx * 0.4;
+    const ear = new THREE.Group(); ear.position.set(sx * 0.305, 0.385, -0.105);
+    ear.rotation.z = -sx * 0.48; head.add(ear); ears.push(ear);
+    mk(G.ear, bodyMat, ear, 0, 0.089, 0, 0.143, 0.143, 0.068);
+    mk(G.ear, M.pink, ear, 0, 0.103, 0.036, 0.091, 0.087, 0.027).castShadow = false;
   }
   // звёздочки над головой (обморок)
   const stars = new THREE.Group(); stars.position.set(0, 0.85, 0.05); stars.visible = false; head.add(stars);
@@ -203,7 +318,7 @@ export function makeHippo(skinIdx, look = {}) {
   });
 
   g.scale.setScalar(0.85);
-  g.userData = { anim, inner, head, arms, legs, cheeks, cheekMat, bodyMat, stain, lids, pupils, xEyes, stars, chest, mouth, dirt, extra, baseCol, dirtCol, butt: new THREE.Vector3(0, 0.3, -0.66), mouthPos: new THREE.Vector3(0, 1.08, 0.95) };
+  g.userData = { anim, inner, head, arms, legs, cheeks, cheekMat, bodyMat, stain, eyes, brows, ears, xEyes, stars, chest, muzzle, jaw, masked, snoutBase, blush, dirt, extra, baseCol, dirtCol, butt: new THREE.Vector3(0, 0.3, -0.66), mouthPos: new THREE.Vector3(0, 1.08, 0.95) };
   return g;
 }
 
@@ -418,10 +533,10 @@ function addGlasses(head, id, mk, anim) {
       mk(G.ring, M.gold, head, 0.2, 0.36, 0.33, 1, 1, 1);
       mk(G.stick, M.gold, head, 0.27, 0.1, 0.32, 1, 0.5, 1).rotation.z = 0.25; break;
     case 'gasmask': {
-      const rub = std(0x3e4a3a, { roughness: 0.8 });
-      mk(G.ballHi, rub, head, 0, 0.1, 0.4, 0.42, 0.33, 0.28);
-      for (const sx of [-1, 1]) mk(G.cyl, std(0xcfe8f0, { roughness: 0.05, metalness: 0.3 }), head, sx * 0.17, 0.36, 0.33, 0.1, 0.03, 0.1).rotation.x = Math.PI / 2;
-      const f = mk(G.cyl, M.metal, head, 0, -0.05, 0.68, 0.13, 0.14, 0.13); f.rotation.x = Math.PI / 2; break;
+      const mat = gasmaskMaterials();
+      mk(G.muzzle, mat.rubber, head, 0, 0.023, 0.355, 0.525, 0.265, 0.352);
+      for (const sx of [-1, 1]) mk(G.ball, mat.lens, head, sx * 0.207, 0.355, 0.286, 0.133, 0.114, 0.073);
+      mk(G.ball, mat.filter, head, 0, -0.012, 0.664, 0.15, 0.14, 0.10); break;
     }
   }
 }

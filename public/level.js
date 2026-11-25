@@ -41,19 +41,21 @@ function TM(theme) {
   const wnorm = waterNormal().clone(); wnorm.needsUpdate = true; wnorm.repeat.set(3, 3);
   const ftex = foamTex().clone(); ftex.needsUpdate = true;
   const masonry = T.brick || T.glow;
-  const cliff = std(masonry ? 0xffffff : T.cliff[0], { map: masonry ? cliffTex(theme) : worldSurfaceTex('rock') });
+  const cliff = std(masonry ? 0xffffff : T.cliff[0], { map: masonry ? cliffTex(theme) : worldSurfaceTex('rock'), flatShading: true });
   const cap = std(T.grass, { map: worldSurfaceTex('bank', 2, 2), roughness: 0.95 });
+  const capTint = { day: 0xe0ae75, sunset: 0xedaa78, sewer: 0x666960, lava: 0x69504b };
   const o = {
     T, wmap, wnorm, ftex,
     water: new THREE.MeshStandardMaterial({ map: wmap, normalMap: wnorm, normalScale: new THREE.Vector2(0.35, 0.35), roughness: theme === 'ice' ? 0.05 : 0.12, metalness: 0.05, envMapIntensity: 0.9, side: THREE.DoubleSide }),
     foam: new THREE.MeshBasicMaterial({ map: ftex, transparent: true, depthWrite: false, opacity: theme === 'sewer' ? 0.5 : 0.85, side: THREE.DoubleSide }),
     slope: std(T.sand, { map: worldSurfaceTex('bank', 0.5, 1), roughness: 0.9, side: THREE.DoubleSide }),
-    top: std(T.top, { map: worldSurfaceTex('bank', 3.5, 1), roughness: 0.95, side: THREE.DoubleSide }),
+    top: std(T.top, { map: worldSurfaceTex('bank', 5, 1), roughness: 0.95, side: THREE.DoubleSide }),
     fall: new THREE.MeshStandardMaterial({ color: 0xbfeaff, transparent: true, opacity: 0.85, map: wmap, roughness: 0.2, side: THREE.DoubleSide }),
     bumper: std(theme === 'sewer' ? 0x6f8a52 : theme === 'ice' ? 0x9fd8f0 : 0x86d13b, { roughness: 0.4 }),
     spikeTube: std(0xffffff, { map: rubberTex().map, normalMap: rubberTex().normalMap, roughness: 0.35 }),
     cone: std(theme === 'ice' ? 0xe8f8ff : 0xfff0fa, { roughness: 0.3 }),
     mesa: [cliff, cliff, cap, cap, cliff, cliff],
+    bankCap: capTint[theme] ? std(capTint[theme], { map: cap.map, roughness: 0.95 }) : cap,
     trunk: std(0x8a5a3a, { map: woodTex().map }),
     crown: std(T.grass, { flatShading: true }),
     tuft: std(T.grass),
@@ -85,6 +87,147 @@ function runs(a, b, pred) {
   const out = []; let st = -1;
   for (let i = a; i <= b; i++) { const ok = pred(i); if (ok && st < 0) st = i; if (!ok && st >= 0) { out.push([st, i - 1]); st = -1; } }
   if (st >= 0) out.push([st, b]); return out;
+}
+
+// Высота и радиус колец задают профиль берега. Размеры в метрах.
+const BANKS = {
+  day:    { rings: [[0, 1], [.33, .85], [.42, .61], [.82, .55], [1, .42]], radius: [4, 8], height: [4, 13], sides: 7 },
+  sunset: { rings: [[0, 1], [.34, .63], [.66, .37], [.74, .62], [.93, .54], [1, .29]], radius: [3, 6], height: [6, 14], sides: 6 },
+  ice:    { rings: [[0, 1], [.38, .87], [.82, .60], [1, .22]], radius: [4, 8], height: [5, 13], sides: 5 },
+  swamp:  { rings: [[0, 1], [.42, .86], [.8, .64], [1, .36]], radius: [5, 9], height: [1.4, 4.2], sides: 7 },
+  jungle: { rings: [[0, 1], [.24, .79], [.85, .62], [1, .40]], radius: [3.5, 7], height: [5, 14], sides: 7 },
+  sewer:  { rings: [[0, 1], [.74, 1], [.76, 1.07], [.85, 1.07], [.86, .90], [1, .90]], radius: [4, 7], height: [4, 9], sides: 8 },
+  lava:   { rings: [[0, 1], [.32, .87], [.37, .70], [.91, .66], [1, .53]], radius: [3, 6], height: [4, 12], sides: 6 },
+  night:  { rings: [[0, 1], [.45, .70], [.64, .40], [.93, .25], [1, .10]], radius: [4, 8], height: [6, 14], sides: 5 },
+};
+
+function clearsRiver(tr, at, x, z, radius) {
+  // В меандрах рядом оказываются далёкие по течению участки. Окно покрывает видимые чанки и запас догрузки.
+  const end = Math.min(tr.N - 1, at + 900);
+  for (let i = Math.max(0, at - 900); i <= end; i += 3) {
+    const dx = x - tr.X[i], dz = z - tr.Z[i], margin = tr.W[i] / 2 + radius + 1.1;
+    if (dx * dx + dz * dz < margin * margin) return false;
+  }
+  return true;
+}
+
+function riverCliffs(forms, theme, materials) {
+  const spec = BANKS[theme] || BANKS.day, pos = [], uv = [], walls = [], caps = [];
+  const vertex = (x, y, z, u, v) => { pos.push(x, y, z); uv.push(u, v); return pos.length / 3 - 1; };
+  const n = spec.sides;
+  for (const f of forms) {
+    let previous, ring;
+    for (const [rise, radius] of spec.rings) {
+      ring = [];
+      for (let k = 0; k <= n; k++) {
+        const a = f.angle + (k % n) * Math.PI * 2 / n;
+        const r = f.rad * radius * f.outline[k % n];
+        const x = f.x + Math.cos(a) * r + f.leanX * rise;
+        const z = f.z + Math.sin(a) * r + f.leanZ * rise;
+        const y = f.y + (f.height + f.crown[k % n]) * rise;
+        ring.push(vertex(x, y, z, k * 3 / n, (y - f.y) / 7));
+      }
+      if (previous) for (let k = 0; k < n; k++) {
+        walls.push(previous[k], ring[k], ring[k + 1], previous[k], ring[k + 1], previous[k + 1]);
+      }
+      previous = ring;
+    }
+    const center = vertex(f.x + f.leanX, f.y + f.height, f.z + f.leanZ, 0.5, 0.5);
+    const edge = ring.slice(0, n).map(i => {
+      const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+      return vertex(x, y, z, (x - f.x) / 5, (z - f.z) / 5);
+    });
+    for (let k = 0; k < n; k++) caps.push(center, edge[(k + 1) % n], edge[k]);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geometry.setIndex(walls.concat(caps));
+  geometry.addGroup(0, walls.length, 0); geometry.addGroup(walls.length, caps.length, 1);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, [materials.mesa[0], materials.bankCap]);
+}
+
+const bankPlantMaterial = lam(0xffffff, { vertexColors: true });
+function bankPlantGeometry(theme, quality) {
+  const positions = [], colors = [], color = new THREE.Color();
+  const triangle = (a, b, c) => {
+    positions.push(...a, ...b, ...c);
+    for (let i = 0; i < 3; i++) colors.push(color.r, color.g, color.b);
+  };
+  // Кольца могут смещаться в стороны: так получаются изгибы стволов, ветви и асимметричные кроны.
+  function layers(rows, tint, sides = 6) {
+    if (quality === 0) sides = Math.min(5, sides);
+    color.setHex(tint);
+    let last, oldRadius;
+    for (const [x, y, z, rx, rz = rx] of rows) {
+      const ring = [];
+      for (let i = 0; i < sides; i++) {
+        const a = i * Math.PI * 2 / sides;
+        ring.push([x + Math.cos(a) * rx, y, z + Math.sin(a) * rz]);
+      }
+      if (last) for (let i = 0; i < sides; i++) {
+        const next = (i + 1) % sides;
+        if (rx) triangle(last[i], ring[i], ring[next]);
+        if (oldRadius) triangle(last[i], ring[next], last[next]);
+      }
+      last = ring; oldRadius = rx;
+    }
+    if (oldRadius) {
+      const [x, y, z] = rows[rows.length - 1];
+      for (let i = 0; i < sides; i++) triangle([x,y,z], last[(i + 1) % sides], last[i]);
+    }
+  }
+  const wood = 0x71533e;
+  const canopy = (x,y,z,w,h,tint) => layers([[x,y,z,w*.19],[x,y+h*.24,z,w,w*.79],[x+w*.08,y+h*.8,z,w*.76,w*.60],[x,y+h,z,w*.26]], tint, 7);
+  if (theme === 'ice' || theme === 'night') {
+    const snow = theme === 'ice';
+    layers([[0,0,0,.21],[0,2.6,0,.11]], wood);
+    for (let i = 0; i < 3; i++) {
+      const y = .65 + i * 1.08, r = (1.53 - i*.35) * (snow ? 1 : .84);
+      layers([[.07*i,y,0,r],[.07*i+.08,y+1.95,0,0]], snow ? 0x336f64 : 0x316359);
+      if (snow) layers([[.07*i+.04,y+.65,0,r*.72],[.07*i+.08,y+2,0,0]], 0xe0f0e7);
+    }
+  } else if (theme === 'jungle') {
+    layers([[0,0,0,.27],[.18,2.3,0,.20],[.62,4.65,.12,.14]], 0x966e45);
+    for (let i = 0; i < 9; i++) {
+      color.setHex([0x286742,0x468744,0x75a955][i%3]);
+      const a = i*2.40, dx = Math.cos(a), dz = Math.sin(a), reach = 2.2 + (i%3)*.36;
+      const leaf = (r,h,w) => [.62+dx*r-dz*w,h,.12+dz*r+dx*w];
+      const base = leaf(0,4.58,0), mid = leaf(reach*.52,5.03,0), tip = leaf(reach,3.64+(i%2)*.40,0);
+      const left = leaf(reach*.51,4.79,.43), right = leaf(reach*.51,4.79,-.43);
+      triangle(base,left,mid); triangle(base,mid,right); triangle(mid,left,tip); triangle(mid,tip,right);
+    }
+  } else if (theme === 'sunset') {
+    const green = 0x55866b;
+    layers([[0,0,0,.36],[.05,2.9,0,.31],[.04,3.75,0,.23],[.04,3.94,0,.06]], green);
+    layers([[0,1.08,0,.22],[.67,1.49,.06,.23],[.80,1.72,.08,.20],[.80,2.67,.08,.18],[.79,2.8,.08,.04]], green);
+    layers([[0,1.82,0,.17],[-.48,2.11,-.12,.18],[-.58,2.35,-.12,.16],[-.58,3.16,-.12,.12]], 0x679279);
+  } else if (theme === 'sewer') {
+    layers([[0,0,0,.77],[0,.22,0,.77],[0,.22,0,.55],[0,3.25,0,.52]], 0x626f69, 8);
+    layers([[0,2.82,0,.65],[0,3.01,0,.65]], 0xa47b4c, 8);
+    layers([[0,3.22,0,.45],[0,3.40,0,.45],[0,3.40,0,.89],[0,3.57,0,.89],[0,3.89,0,.37]], 0x425956, 8);
+  } else if (theme === 'lava') {
+    layers([[0,0,0,.42],[-.12,1.2,0,.32],[.18,2.75,.15,.17],[.63,3.70,.09,.05]], 0x483b37, 5);
+    layers([[0,1.16,0,.26],[-.90,2.0,.11,.18],[-1.24,2.92,.04,.05]], 0x5f493d, 5);
+    layers([[.18,2.62,.15,.13],[.82,2.96,-.18,.07],[1.03,3.38,-.23,.025]], 0x714f3d, 5);
+  } else {
+    const willow = theme === 'swamp';
+    layers([[0,0,0,willow ? .58 : .34],[.16,1.5,0,.24],[-.09,2.45,.06,.17],[-.77,3.18,.01,.08]], wood);
+    layers([[.15,1.53,0,.20],[.72,2.64,.03,.12],[1.22,2.97,.09,.06]], wood);
+    if (willow) {
+      canopy(-.68,2.49,0,1.35,1.15,0x688451); canopy(.74,2.55,.06,1.48,1.16,0x8c9f55);
+      for (let i=0;i<5;i++) { const a=i*2.40, x=Math.cos(a)*1.5, z=Math.sin(a)*.94; layers([[x,1.07+(i%2)*.39,z,.06],[x,2.86,z,.51],[x,3.40,z,.22]],0x738a4f,5); }
+    } else {
+      canopy(-.82,2.74,0,1.60,.94,0x507c57); canopy(.98,2.57,.05,1.35,.78,0x8b9e60);
+      canopy(.12,3.33,.23,1.26,.74,0x749665);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
 function pennantGeometry(span) {
@@ -128,6 +271,11 @@ function releaseArch(arch) {
   }
 }
 
+function releaseGeometry(part) {
+  if (part.isInstancedMesh) part.dispose();
+  if (part.geometry) part.geometry.dispose();
+}
+
 // ------------------------------------------------------------
 export class LevelScene {
   constructor(tr, quality = 2) {
@@ -138,9 +286,17 @@ export class LevelScene {
     this.ensure(tr.endless ? 450 : tr.length);
   }
   ensure(uptoS) {
-    const tr = this.tr, target = Math.min(tr.N - 1, Math.ceil(uptoS));
+    const tr = this.tr, requested = Math.ceil(uptoS);
+    const target = Math.min(tr.N - 1, tr.endless ? Math.ceil(requested / 150) * 150 : requested);
     while (this.built < target) {
-      const a = this.built, b = Math.min(target, a + 150);
+      const a = this.built;
+      let b = Math.min(target, (Math.floor(a / 150) + 1) * 150);
+      if (tr.endless) {
+        const theme = tr.themeAt(a + 1);
+        for (let i = a + 2; i <= b; i++) {
+          if (tr.themeAt(i) !== theme) { b = i - 1; break; }
+        }
+      }
       this.buildRange(a, b);
       this.built = b;
     }
@@ -153,8 +309,8 @@ export class LevelScene {
     }
   }
   trim(behindS) {          // бесконечный режим: убираем то, что далеко позади
-    for (const c of this.chunks) if (!c.gone && c.b < behindS - 40) { this.root.remove(c.g); c.g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); c.gone = true; }
-    for (const r of this.obs) if (!r.gone && r.o.s < behindS - 40) { if (r.mesh) this.root.remove(r.mesh); r.gone = true; }
+    for (const c of this.chunks) if (!c.gone && c.b < behindS - 40) { this.root.remove(c.g); c.g.traverse(releaseGeometry); c.gone = true; }
+    for (const r of this.obs) if (!r.gone && r.o.s < behindS - 40) { releaseObstacle(r); r.gone = true; }
     for (const a of this.arches) if (!a.gone && a.s < behindS - 40) { releaseArch(a); a.gone = true; }
     this.chunks = this.chunks.filter(c => !c.gone); this.obs = this.obs.filter(r => !r.gone); this.arches = this.arches.filter(a => !a.gone);
   }
@@ -172,7 +328,12 @@ export class LevelScene {
         const m = ribbon(x0, x1, i => P(i, side * (tr.W[i] / 2 + 0.1), 0.0), i => P(i, side * (tr.W[i] / 2 - 1.1), 0.0), M.foam, 4, true);
         m.renderOrder = 1; m.receiveShadow = false; g.add(m);
         g.add(ribbon(Math.max(0, x0 - 1), Math.min(N - 1, x1 + 1), i => P(i, side * (tr.W[i] / 2 + 0.75), -0.1), i => P(i, side * (tr.W[i] / 2 + 1.9), 1.4), M.slope));
-        g.add(ribbon(Math.max(0, x0 - 1), Math.min(N - 1, x1 + 1), i => P(i, side * (tr.W[i] / 2 + 1.9), 1.4), i => P(i, side * (tr.W[i] / 2 + 16), 1.7), M.top));
+        const outerBank = i => {
+          const half = tr.W[i] / 2, p = P(i, side * (half + 19));
+          const extra = clearsRiver(tr, i, p[0], p[2], 3.5) ? 22 : 16;
+          return P(i, side * (half + extra), 1.7);
+        };
+        g.add(ribbon(Math.max(0, x0 - 1), Math.min(N - 1, x1 + 1), i => P(i, side * (tr.W[i] / 2 + 1.9), 1.4), outerBank, M.top));
       }
       for (const [x0, x1] of runs(a, b, i => gaps[i])) {
         g.add(ribbon(x0, x1, i => P(i, side * (tr.W[i] / 2 + 4.5), -0.05), i => P(i, side * (tr.W[i] / 2 + 6.5), -16), M.fall, 3));
@@ -209,34 +370,62 @@ export class LevelScene {
     // окружение
     let seed = (tr.idx || 0) * 977 + a * 31 + 13;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-    const mesas = [], trees = [], tufts = [], stones = [], glows = [];
-    const treeP = T.dense ? 0.95 : theme === 'ice' || theme === 'sewer' ? 0.15 : 0.55;
+    const mesas = [], trees = [], tufts = [], stones = [], glows = [], spec = BANKS[theme] || BANKS.day;
+    const between = ([lo, hi]) => lo + (hi - lo) * rnd();
+    for (const side of [1, -1]) {
+      const gaps = side > 0 ? tr.gapL : tr.gapR;
+      for (let i = a + 2 + Math.floor(rnd()*5); i < b; i += 8 + Math.floor(rnd()*8)) {
+        if (gaps[i]) continue;
+        const rad = between(spec.radius), height = between(spec.height);
+        const setback = rad + 3.8 + rnd()*9;
+        const [x,y,z] = P(i, side * (tr.W[i]/2 + setback), 0.55);
+        if (!clearsRiver(tr, i, x, z, rad * 1.35)) continue;
+        const regular = theme === 'sewer', tilt = regular ? 0 : theme === 'ice' || theme === 'night' ? .38 : .16;
+        const outline = [], crown = [];
+        for (let j=0; j<spec.sides; j++) {
+          outline.push(regular ? 1 : .81 + rnd()*.28);
+          crown.push(regular ? 0 : (rnd()-.5) * height * (theme === 'ice' ? .48 : .17));
+        }
+        mesas.push({x,y,z,rad,height,outline,crown,angle:rnd()*6.28,leanX:(rnd()-.5)*rad*tilt,leanZ:(rnd()-.5)*rad*tilt});
+      }
+      // Крупные силуэты остаются на низком качестве. Более дорогие режимы добавляют растительность между ними.
+      const spacing = T.dense ? 8 : theme === 'lava' || theme === 'sewer' ? 20 : 13;
+      for (let i=a+2+Math.floor(rnd()*5); i<b; i += spacing + Math.floor(rnd()*8)) {
+        if (gaps[i]) continue;
+        const scale = .75 + rnd() * .65, radius = (T.dense ? 3.5 : 2.45) * scale;
+        const offset = Math.max(radius + 1.3, 3.5) + rnd()*4;
+        const [x,y,z] = P(i, side * (tr.W[i]/2 + offset), 1.43);
+        if (!clearsRiver(tr, i, x, z, radius)) continue;
+        trees.push({x,y,z,s:scale,r:rnd()*6.28});
+        if (this.q >= 1 && (T.dense || rnd() < .36)) {
+          const j = Math.min(b, i + 3);
+          if (gaps[j]) continue;
+          const [xx,yy,zz] = P(j, side * (tr.W[j]/2 + offset + 2.9), 1.48);
+          if (clearsRiver(tr, j, xx, zz, radius)) trees.push({x:xx,y:yy,z:zz,s:.57+rnd()*.46,r:rnd()*6.28});
+        }
+      }
+    }
     for (let i = a; i < b; i += 5) for (const side of [1, -1]) {
       if ((side > 0 ? tr.gapL : tr.gapR)[i]) continue;
-      for (let k = 0, nm = 1 + Math.floor(rnd() * 2); k < nm; k++) {
-        const p = P(i, side * (tr.W[i] / 2 + 10 + rnd() * 16), 0), h = (theme === 'sewer' ? 10 : 4) + rnd() * 14;
-        mesas.push({ x: p[0], y: p[1] + 1.6 + h / 2 - 1, z: p[2], sx: 4 + rnd() * 7, sy: h, sz: 4 + rnd() * 7, ry: rnd() * Math.PI });
+      if (this.q >= 1 && !T.brick && !T.glow && rnd() < (this.q >= 2 ? .7 : .3)) {
+        const p = P(i, side * (tr.W[i]/2 + 2.5 + rnd()*6), 1.55);
+        tufts.push({x:p[0], y:p[1], z:p[2], s:.65+rnd()*.65});
       }
-      if (this.q >= 1 && rnd() < treeP) { const p = P(i, side * (tr.W[i] / 2 + 3.5 + rnd() * 5), 1.6); trees.push({ x: p[0], y: p[1], z: p[2], s: 0.8 + rnd() * 0.7, r: rnd() * 6 }); }
-      for (let k = 0; k < (this.q >= 2 ? 3 : 1); k++) { const p = P(Math.min(N - 1, i + Math.floor(rnd() * 5)), side * (tr.W[i] / 2 + 2.3 + rnd() * 8), 1.55); tufts.push({ x: p[0], y: p[1], z: p[2], s: 0.5 + rnd() * 0.6 }); }
-      if (rnd() < 0.3) { const p = P(i, side * (tr.W[i] / 2 + 4 + rnd() * 6), 1.6); stones.push({ x: p[0], y: p[1], z: p[2], s: 0.5 + rnd() * 1.2 }); }
+      if (rnd() < (this.q ? .18 : .1)) { const p = P(i, side * (tr.W[i] / 2 + 4 + rnd() * 6), 1.6); stones.push({ x: p[0], y: p[1], z: p[2], s: 0.5 + rnd() * 1.2 }); }
       if (M.glow && rnd() < 0.5) { const p = P(i, side * (tr.W[i] / 2 + 2.2 + rnd() * 3), 1.62); glows.push({ x: p[0], y: p[1], z: p[2], s: 0.4 + rnd() * 0.8 }); }
     }
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sv = new THREE.Vector3();
     if (mesas.length) {
-      const mi = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), M.mesa, mesas.length);
-      mesas.forEach((r, k) => { q.setFromEuler(e.set(0, r.ry, 0)); m4.compose(v.set(r.x, r.y, r.z), q, sv.set(r.sx, r.sy, r.sz)); mi.setMatrixAt(k, m4); });
+      const mi = riverCliffs(mesas, theme, M);
       mi.receiveShadow = true; mi.castShadow = this.q >= 2; g.add(mi);
     }
     if (trees.length) {
-      const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.2, 2.2, 6), M.trunk, trees.length);
-      const crown = new THREE.InstancedMesh(theme === 'ice' ? new THREE.ConeGeometry(1, 2.2, 7) : new THREE.IcosahedronGeometry(1, 0), theme === 'ice' ? std(0x3f7a5a, { flatShading: true }) : M.crown, trees.length);
+      const plants = new THREE.InstancedMesh(bankPlantGeometry(theme, this.q), bankPlantMaterial, trees.length);
       trees.forEach((t, k) => {
         q.setFromEuler(e.set(0, t.r, 0));
-        m4.compose(v.set(t.x, t.y + 1.1 * t.s, t.z), q, sv.set(t.s, t.s, t.s)); trunk.setMatrixAt(k, m4);
-        m4.compose(v.set(t.x, t.y + 2.5 * t.s, t.z), q, sv.set(1.3 * t.s, 1.1 * t.s, 1.3 * t.s)); crown.setMatrixAt(k, m4);
+        m4.compose(v.set(t.x, t.y, t.z), q, sv.setScalar(t.s)); plants.setMatrixAt(k, m4);
       });
-      trunk.castShadow = crown.castShadow = true; g.add(trunk, crown);
+      plants.castShadow = this.q >= 1; g.add(plants);
     }
     if (tufts.length) {
       const ti = new THREE.InstancedMesh(new THREE.ConeGeometry(0.25, 0.7, 5), M.tuft, tufts.length * 3); let k = 0;
@@ -244,7 +433,7 @@ export class LevelScene {
       g.add(ti);
     }
     if (stones.length) {
-      const si = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), M.stone, stones.length);
+      const si = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), M.mesa[0], stones.length);
       stones.forEach((s, k) => { q.setFromEuler(e.set(rnd(), rnd() * 3, rnd())); m4.compose(v.set(s.x, s.y, s.z), q, sv.set(s.s, s.s * 0.7, s.s)); si.setMatrixAt(k, m4); });
       si.castShadow = true; g.add(si);
     }
@@ -320,7 +509,9 @@ export class LevelScene {
   dispose() {
     for (const arch of this.arches) releaseArch(arch);
     this.arches.length = 0;
-    this.root.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    for (const obstacle of this.obs) releaseObstacle(obstacle);
+    this.obs.length = 0;
+    this.root.traverse(releaseGeometry);
   }
 }
 
@@ -328,6 +519,7 @@ export class LevelScene {
 //  Препятствия
 // ------------------------------------------------------------
 let OBM = null;
+const sharedObstacleMaterials = new Set();
 function obm() {
   if (OBM) return OBM;
   const W = woodTex(), Mt = metalTex(), R = rockTex(0x5d5f69), Bd = rockTex(0x8a7460), C = crocTex(), Rb = rubberTex();
@@ -345,6 +537,7 @@ function obm() {
     red: std(0xd8323a), teal: std(0x4fc3a1, { roughness: 0.5 }),
     mush: std(0xffffff, { map: mushTex(), roughness: 0.35 }),
   };
+  for (const material of Object.values(OBM)) sharedObstacleMaterials.add(material);
   return OBM;
 }
 const coneSmall = new THREE.ConeGeometry(0.17, 0.5, 8);
@@ -375,7 +568,7 @@ function lumpy(r, detail, seedS, mat) {
 }
 
 function makeObstacle(o, tr) {
-  const B = obm(), T0 = obstacleState(o, tr, 0), res = { o, mesh: null, update() {} }, sh = [];
+  const B = obm(), T0 = obstacleState(o, tr, 0), res = { o, mesh: null, owned: new Set(), update() {} }, sh = [];
   switch (o.type) {
     case 'rock': {
       const g = new THREE.Group(), m = lumpy(1, 1, o.s * 13.7, B.rock);
@@ -544,6 +737,7 @@ function makeObstacle(o, tr) {
     }
     case 'boost': {
       const t = arrowTex(); t.repeat.set(1, o.len / 2.5);
+      res.owned.add(t); // Собственный рисунок с независимым смещением для каждой полосы.
       const m = new THREE.Mesh(new THREE.PlaneGeometry(o.wid, o.len), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }));
       m.rotation.order = 'YXZ'; m.rotation.y = T0.h + Math.PI; m.rotation.x = -Math.PI / 2; m.position.set(T0.x, T0.y + 0.04, T0.z); m.renderOrder = 1; res.mesh = m;
       res.update = (T, dt) => { t.offset.y -= dt * 1.5; };
@@ -570,8 +764,19 @@ function makeObstacle(o, tr) {
       break;
     }
   }
+  // Позже к мешу прикрепляются кляксы из общего пула. Фиксируем только то, что создала фабрика.
+  res.mesh?.traverse(part => {
+    if (part.geometry && part.geometry !== coneSmall) res.owned.add(part.geometry);
+    if (part.material && !sharedObstacleMaterials.has(part.material)) res.owned.add(part.material);
+  });
   if (!res.target) res.target = res.mesh;
   return res;
+}
+
+function releaseObstacle(obstacle) {
+  obstacle.mesh?.removeFromParent();
+  for (const resource of obstacle.owned) resource.dispose();
+  obstacle.owned.clear();
 }
 
 // ------------------------------------------------------------
