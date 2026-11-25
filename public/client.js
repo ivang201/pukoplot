@@ -11,6 +11,7 @@ import {
   RIM_SEATS, CENTER_SEAT, isCenter, rimCount, shapeOf, rimR, RAFT_SHAPES, RAFT_SHAPE_IDS, DAILY, DAILY_INFO, dailyMutator,
 } from './shared.js';
 import { ARENA_MODES, MODE_KEYS, createArena, ARENA_R, PICKUPS, ARENA_EVENTS, LAP_GATES } from './arena.js';
+import { TOW_DOCK_X, TOW_DOCK_HALF, towDockSide } from './tow.js';
 import { ArenaScene, makePickupMesh, animatePickup } from './arena-scene.js';
 import { Predictor } from './predict.js';
 import { Sfx } from './audio.js';
@@ -95,7 +96,15 @@ function updatePointScale() {
   const s = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   for (const p of [gasFx, foamFx, fireFx, pooFx, trailFx]) p.setView(s, scene.fog);
 }
-addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); updatePointScale(); });
+function updateCameraFraming() {
+  const width = innerWidth, height = innerHeight;
+  camera.aspect = width / height;
+  if (document.body.classList.contains('fitting-room')) {
+    const narrow = width <= 760;
+    camera.setViewOffset(width, height, narrow ? 0 : Math.min(200, width * 0.15), narrow ? height * 0.245 : 0, width, height);
+  } else camera.clearViewOffset();
+}
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); updateCameraFraming(); updatePointScale(); });
 function prewarm(obj = scene) {          // заранее компилируем шейдеры и грузим текстуры, чтобы не было фризов в заезде
   try {
     renderer.compile(obj, camera, scene);
@@ -277,7 +286,7 @@ function regenEnv(th) {
 // Режим комнаты: сплав (трасса) или арена
 function syncMode(m) {
   if (m.arena) {
-    const A = m.arena, key = `${A.mode}:${A.seed}:${A.teams.map(t => t.members.join('.') + '/' + t.shape + '/' + t.rskin).join('|')}`;
+    const A = m.arena, key = `${A.mode}:${A.seed}:${A.teams.map(t => t.members.join('.') + '/' + t.shape + '/' + t.rskin + '/' + (t.side ?? '')).join('|')}`;
     if (key !== arenaKey) setupArena(A, key);
   } else {
     if (arenaKey) teardownArena();
@@ -446,7 +455,7 @@ function onRoom(m) {
     const isHost = m.host === myId;
     $('resBtns').classList.toggle('hidden', !isHost);
     $('resWait').classList.toggle('hidden', isHost);
-    $('resTourReset').classList.toggle('hidden', !isHost || !m.arena);
+    $('resTourReset').classList.toggle('hidden', !isHost || !m.arena || m.arena.practice);
     if (prevPhase !== 'results') showResults();
     else if (m.arena) $('resTourTable').innerHTML = tourTable(m.tour, true);
   }
@@ -517,9 +526,9 @@ const RULE_UI = [
   { k: 'burps', name: 'Отрыжки', opts: [[true, 'Вкл'], [false, 'Выкл']] },
   { k: 'pickups', name: 'Бонусы на трассе', hint: 'бобы, перец, прищепки', opts: [[true, 'Вкл'], [false, 'Выкл']], when: () => !isArena() },
   { k: 'lives', name: 'Жизни (бесконечный, задание дня)', opts: [[3, '3'], [5, '5'], [9, '9']], when: () => !isArena() },
-  { k: 'perks', name: 'Бафы легендарок', hint: 'у каждого бафа есть и минус', opts: [[true, 'Вкл'], [false, 'Выкл']] },
+  { k: 'perks', name: 'Бафы легендарок', hint: 'у каждого бафа есть и минус', opts: [[true, 'Вкл'], [false, 'Выкл']], when: () => room.mode !== 'tow' },
   { k: 'ult', name: 'Мега-пук', hint: 'копится за игру, кнопка Q', opts: [[true, 'Вкл'], [false, 'Выкл']] },
-  { k: 'events', name: 'События на арене', hint: 'водоворот, ураган, бобовый дождь', opts: [[true, 'Вкл'], [false, 'Выкл']], when: () => isArena() },
+  { k: 'events', name: 'События на арене', hint: 'водоворот, ураган, бобовый дождь', opts: [[true, 'Вкл'], [false, 'Выкл']], when: () => isArena() && !['ball','tow'].includes(room.mode) },
 ];
 function renderRules() {
   if (!room) return;
@@ -546,12 +555,17 @@ function renderModes() {
   if (A) {
     const M = ARENA_MODES[A.mode];
     const goalTxt = modeGoalText(A.mode);
-    const artFile = A.mode === 'ball' ? 'art/pukoball.webp' : `art/routes/${M.theme}.webp`;
+    const tow = A.mode === 'tow';
+    const artFile = tow ? 'art/tow-harbor.webp' : A.mode === 'ball' ? 'art/pukoball.webp' : `art/routes/${M.theme}.webp`;
     const art = `<img class="arena-art" src="${artFile}" alt="" width="800" height="450">`;
+    const format = tow ? (A.practice ? 'Тренировка · 90 секунд' : '90 секунд · при ничьей ещё 15') : `раунд ${fmtTime(M.time).slice(0, -2)}`;
+    const crewNote = tow
+      ? 'У оранжевого причала флаг с солнцем, у синего — с якорем. Подойдите к утке медленно, и трос зацепится сам.'
+      : 'Форму своего плота на арене выберите в гардеробе.' + (A.mode === 'hunger2' ? ' Пары собираются по порядку входа.' : A.mode === 'ball' ? ' Команды собираются через одного по порядку входа.' : '');
     $('arenaBox').innerHTML = `<div class="arena-card">${art}<div class="ah">${M.icon} <b>${M.name}</b> <small>${M.sub}</small></div><p>${esc(M.desc)}</p>
-      <div class="goal">Победа: ${goalTxt} · раунд до ${Math.round(M.time / 60)} мин</div>
+      <div class="goal">${goalTxt} · ${format}</div>
       <div class="teams">${A.teams.map(t => `<div class="tm" style="--tc:${t.color}"><i></i><b>${esc(t.name)}</b><span title="${esc(shapeOf(t.shape).name)}">${shapeOf(t.shape).icon}</span></div>`).join('') || '<span class="note">Нужен хотя бы один игрок</span>'}</div>
-      <p class="note">Форму своего плота на арене выберите в гардеробе.${A.mode === 'hunger2' ? ' Пары собираются по порядку входа.' : A.mode === 'ball' ? ' Команды: через одного по порядку входа.' : ''}</p>
+      <p class="note">${crewNote}</p>
       <div class="row"><button class="btn sm" id="tourBtn">🏆 Турнирная таблица${room.tour && room.tour.rounds ? ` (${room.tour.rounds})` : ''}</button></div></div>`;
     $('tourBtn').onclick = () => showTour();
   }
@@ -622,7 +636,7 @@ function renderLobby() {
   $('myLook').innerHTML = SKINS.map((s, i) => shirtHTML(i, i === selSkin, taken.has(i))).join('');
   const isHost = room.host === myId;
   renderRoutes();
-  $('startBtn').textContent = isArena() ? 'В бой!' : 'Поплыли!';
+  $('startBtn').textContent = room.mode === 'tow' ? (room.arena.practice ? 'Начать тренировку' : 'На буксир!') : isArena() ? 'В бой!' : 'Поплыли!';
   $('startBtn').classList.toggle('hidden', !isHost);
   $('botBtns').classList.toggle('hidden', !isHost || isArena());
   $('addBotBtn').disabled = room.players.length >= RIM_SEATS;
@@ -670,13 +684,18 @@ function updateScreens() {
   }
   $('lobby').classList.toggle('hidden', !joined || phase !== 'lobby');
   document.body.classList.toggle('in-lobby', joined && phase === 'lobby');
+  document.body.classList.toggle('tow-match', room?.mode === 'tow' && (phase === 'race' || phase === 'count'));
+  if (room?.mode !== 'tow' || phase !== 'race') {
+    $('towGuide').classList.add('hidden');
+    $('timer').classList.remove('overtime');
+  }
   $('hud').classList.toggle('hidden', !joined);
   $('results').classList.toggle('hidden', !joined || phase !== 'results');
   $('emotes').classList.toggle('hidden', !joined || phase === 'results');
   $('timer').classList.toggle('hidden', phase === 'lobby');
   $('topbar').classList.toggle('hidden', phase === 'lobby' || endless || arena);
   $('endlessHud').classList.toggle('hidden', phase === 'lobby' || !endless);
-  $('arenaHud').classList.toggle('hidden', !arena || !joined);
+  $('arenaHud').classList.toggle('hidden', !arena || !joined || (room.mode === 'tow' && phase === 'lobby'));
   $('help').innerHTML = '<b>Пробел</b> — пукнуть &nbsp; <b>A / D</b> — ползти по кромке (в центре — крутиться)' + (canShoot() ? ' &nbsp; <b>E / правая кнопка</b> — выстрел калом' : '') + (room && room.rules.ult !== false ? ' &nbsp; <b>Q</b> — мега-пук' : '') + ' &nbsp; <b>Мышь</b> — камера &nbsp; <b>M</b> — звук &nbsp; <b>F3</b> — статистика';
   const mine = room && room.players.find(p => p.id === myId);
   $('spectator').classList.toggle('hidden', !joined || !mine || mine.seat >= 0);
@@ -755,8 +774,17 @@ function showArenaResults(r) {
   if (sleepy && sleepy.faints) aw.push(`<div class="award">😵 <b>Слабый нос:</b> ${esc(sleepy.name)}, в отключке ${sleepy.faints} ${plural(sleepy.faints, 'раз', 'раза', 'раз')}</div>`);
   $('resAwards').innerHTML = aw.join('');
   $('resTourTable').innerHTML = tourTable(r.tour, true);
-  $('resTour').classList.remove('hidden');
-  $('againBtn').textContent = 'Следующий раунд'; $('nextBtn').classList.add('hidden');
+  $('resTour').classList.toggle('hidden', !!r.practice);
+  $('againBtn').textContent = r.mode === 'tow' ? (r.practice ? 'Ещё тренировка' : 'Реванш') : 'Следующий раунд';
+  $('nextBtn').classList.add('hidden');
+  if (r.practice) {
+    $('resTitle').textContent = r.aborted ? 'Тренировка прервана' : 'Тренировка окончена';
+    $('resLevel').textContent = 'Утка на буксире · тренировка';
+    $('resMetricLabel').textContent = 'Доставлено уток';
+    $('resTime').textContent = `${r.teams[0]?.score || 0} из ${M.goal}`;
+    $('resMedal').textContent = `Время на воде · ${fmtTime(r.time)}`;
+    $('resStats').replaceChildren();
+  }
   coinsAward();
 }
 $('resTourReset').onclick = () => send({ t: 'tourReset' });
@@ -871,9 +899,34 @@ function showTop(m) {
 }
 
 // ---------- гардероб
-function openWardrobe() { if (!joined || phase !== 'lobby') return; renderWardrobe(); wardSnap = true; $('wardrobe').classList.remove('hidden'); $('lobby').classList.add('dim'); }
-function closeWardrobe() { if (!$('wardrobe').classList.contains('hidden')) camSnap = true; $('wardrobe').classList.add('hidden'); $('lobby').classList.remove('dim'); }
+function openWardrobe() {
+  if (!joined || phase !== 'lobby') return;
+  renderWardrobe(); wardSnap = true;
+  $('wardrobe').classList.remove('hidden');
+  document.body.classList.add('fitting-room');
+  for (const h of hippos.values()) h.label.visible = false;
+  updateCameraFraming();
+  $('wardClose').focus({ preventScroll: true });
+}
+function closeWardrobe() {
+  if ($('wardrobe').classList.contains('hidden')) return;
+  camSnap = true;
+  $('wardrobe').classList.add('hidden');
+  document.body.classList.remove('fitting-room');
+  for (const h of hippos.values()) h.label.visible = true;
+  updateCameraFraming();
+  if (phase === 'lobby') $('wardBtn').focus({ preventScroll: true });
+}
 $('wardClose').onclick = closeWardrobe;
+const fittingAngles = { front: 0.18, side: Math.PI * 0.48, back: Math.PI };
+let fittingView = 'front';
+$('wardViews').addEventListener('click', e => {
+  const button = e.target.closest('[data-view]');
+  if (!button) return;
+  fittingView = button.dataset.view;
+  wardSnap = true;
+  for (const view of $('wardViews').children) view.setAttribute('aria-pressed', String(view === button));
+});
 function myLookNow() { const p = room && room.players.find(q => q.id === myId); return (p && p.look) || DEFAULT_LOOK; }
 let wardTab = lsGet('puk.wtab', 'hat');
 function myInv() { return { ach: (me && me.data.ach) || {}, inv: (me && me.data.inv) || {} }; }
@@ -896,17 +949,21 @@ function renderWardrobe() {
   else {
     const sl = SLOT[wardTab];
     const list = sl.list.slice().sort((a, b) => (owns(b, ach, inv) - owns(a, ach, inv)) || (RARITY[a.r].rank - RARITY[b.r].rank));
-    body = `<div class="items cards">${list.map(it => {
+    const available = [], locked = [];
+    for (const it of list) {
       const have = owns(it, ach, inv), on = look[sl.key] === it.id;
-      return `<button class="item card r-${it.r} ${on ? 'on' : ''} ${have ? '' : 'locked'}" data-slot="${sl.key}" data-id="${it.id}" ${have ? '' : 'disabled'} title="${esc(have ? it.name : lockReason(it))}">
+      (have ? available : locked).push(`<button class="item card r-${it.r} ${on ? 'on' : ''} ${have ? '' : 'locked'}" data-slot="${sl.key}" data-id="${it.id}" ${have ? `aria-pressed="${on}"` : 'disabled'} title="${esc(have ? it.name : lockReason(it))}">
         ${itemIcon(it)}<span class="nm">${have ? '' : '🔒 '}${esc(it.name)}</span><small class="rar">${RARITY[it.r].name}${it.perk ? ' · баф' : ''}</small>
-        ${it.perk ? perkHTML(it, true) : ''}${!have ? `<small class="how">${esc(lockReason(it))}</small>` : ''}</button>`;
-    }).join('')}</div>${sl.key === 'raft' ? `<p class="note">${esc(shapeOf(look.raft).desc)}</p>` : ''}${sl.key === 'rskin' ? '<p class="note">В сплаве у всех общий плот — его раскраску берут у хоста. На арене у каждого свой.</p>' : ''}${sl.key === 'voice' ? '<p class="note">Так звучит ваш пук у всех игроков.</p>' : ''}${sl.key === 'trail' ? '<p class="note">Искорки летят поверх газа, а сам газ не меняется: по нему всё так же видно, когда он стал коричневым.</p>' : ''}`;
+        ${it.perk ? perkHTML(it, true) : ''}${!have ? `<small class="how">${esc(lockReason(it))}</small>` : ''}</button>`);
+    }
+    const keepOpen = $('wardLocked')?.dataset.slot === sl.key && $('wardLocked').open;
+    const lockedList = locked.length ? `<details class="lobby-fold ward-locked" id="wardLocked" data-slot="${sl.key}" ${keepOpen ? 'open' : ''}><summary>Как открыть ещё · ${locked.length}</summary><div class="items cards">${locked.join('')}</div></details>` : '';
+    body = `<div class="items cards">${available.join('')}</div>${lockedList}${sl.key === 'raft' ? `<p class="note">${room?.mode === 'tow' ? 'Для буксировки обе команды получают круглый плот.' : esc(shapeOf(look.raft).desc)}</p>` : ''}${sl.key === 'rskin' ? '<p class="note">В сплаве цвет общего плота выбирает хост.</p>' : ''}${sl.key === 'voice' ? '<p class="note">Так звучит ваш пук у всех игроков.</p>' : ''}${sl.key === 'trail' ? '<p class="note">Искорки летят поверх газа. Цвет газа показывает, когда он стал коричневым.</p>' : ''}`;
   }
   const perks = perksOf(look), on = !room || room.rules.perks !== false;
   $('wardBody').innerHTML = `<div class="ward-top"><span>Собрано из подарков: <b>${boxOwned}</b> из ${BOX_ITEMS.length}</span><button class="btn sm" id="wardShop">🎁 Подарки</button></div>
     <div class="wtabs">${tabs.map(([k, n]) => `<button class="wtab ${wardTab === k ? 'on' : ''}" data-tab="${k}">${n}</button>`).join('')}</div>${body}
-    <div class="my-perks"><h4>Мои бафы ${on ? '' : '<small>(хост выключил бафы)</small>'}</h4>${perks.length ? perks.map(k => perkHTML(k.item)).join('') : '<p class="note">Бафы дают только легендарные шапки, очки, аксессуары и окрасы. Их можно носить по одной в каждом слоте — до четырёх сразу.</p>'}</div>`;
+    ${perks.length ? `<div class="my-perks"><h4>Мои бафы ${on ? '' : '<small>(отключены в этой партии)</small>'}</h4>${perks.map(k => perkHTML(k.item)).join('')}</div>` : ''}`;
   $('wardShop').onclick = () => { closeWardrobe(); openShop(); };
 }
 $('wardBody').addEventListener('click', (e) => {
@@ -1139,14 +1196,25 @@ function ensureHippo(id) {
   const obj = makeHippo(info.skin, info.look || DEFAULT_LOOK);
   const title = info.pinned && info.pinned[0] && ACH[info.pinned[0]] ? ACH[info.pinned[0]].name : '';
   const label = makeLabel(info.name, id === myId ? '#d4f752' : '#ffffff', title);
+  label.visible = !document.body.classList.contains('fitting-room');
   label.position.set(0, 2.55, 0); obj.add(label);
   const lk = info.look || DEFAULT_LOOK;
   h = { id, obj, rv: null, key: hippoKey(info), name: info.name, skin: info.skin, look: lk, voice: VOICES.find(v => v.id === lk.voice) || VOICES[0], trail: lk.trail || 'none', trailAcc: 0, farting: false, gas: 1, heat: 0, flags: 0, dirt: -1, jit: Math.random() * 10, vpos: null, ej: null, blink: 2 + Math.random() * 3, emitAcc: 0, smokeAcc: 0, burpT: -9, rumbleT: -9, rumbleNext: 4 + Math.random() * 8, faintT: -9 };
+  h.label = label;
   hippos.set(id, h);
   prewarm(obj);
   return h;
 }
-function removeHippo(id) { const h = hippos.get(id); if (!h) return; h.obj.parent && h.obj.parent.remove(h.obj); sfx.fartStop(id, false); sfx.sizzle(id, 0); hippos.delete(id); }
+function removeHippo(id) {
+  const h = hippos.get(id);
+  if (!h) return;
+  h.obj.removeFromParent();
+  h.label.material.map.dispose();
+  h.label.material.dispose();
+  h.obj.userData.disposeAppearance?.();
+  sfx.fartStop(id, false); sfx.sizzle(id, 0);
+  hippos.delete(id);
+}
 
 // ------------------------------------------------------------
 //  Грязь на окружении: куда упала капля
@@ -1309,6 +1377,14 @@ function playEvent(e) {
       if (arenaScene && arenaScene.ball) splash(arenaScene.ball.position.x, 0, arenaScene.ball.position.z, 70, 1.6);
       break;
     }
+    case 'delivery':
+      sfx.ding();
+      feed(`🦆 ${teamName(e.team)} доставили утку`);
+      break;
+    case 'overtime':
+      sfx.beep(true);
+      toast('Решающая доставка', 'Ещё 15 секунд', 'sm', 1250);
+      break;
     case 'grow': if (tr) extendTrack(tr, e.len); break;
     case 'geyser': {
       sfx.geyser();
@@ -1619,12 +1695,12 @@ function driveHippo(ph, flags, dirt, rv, R, t, dt, waterY) {
   animateHippo(h, { pos: h.vpos, vel: ph.vel, f, heat: ph.heat, hot, stun, faint, off, t, dt, R, waterY, rv, spray: f && (flags & 16 || (id === myId && ph.gas < PHYS.sprayGas)) });
   return h;
 }
-function placeCamera(rv, waterY, t, dt, lookH, distMul = 1) {
+function placeCamera(rv, waterY, t, dt, lookH, distMul = 1, cargo = null) {
   const wardrobe = !$('wardrobe').classList.contains('hidden') && hippos.get(myId) && hippos.get(myId).rv && hippos.get(myId).obj.parent === hippos.get(myId).rv.holder;
   if (wardrobe) {
     const mh = hippos.get(myId), mrv = mh.rv, th = mrv.disp.a + mh.vpos;
     mh.obj.getWorldPosition(tmpV2);
-    const center = isCenter(mh.seat), dir = center ? th + Math.PI : th + 0.25, dist = center ? 2.8 : 2.9;
+    const center = isCenter(mh.seat), dir = th + (center ? Math.PI : 0) + fittingAngles[fittingView], dist = innerWidth <= 760 ? 5.15 : 3.15;
     const want = tmpV.set(tmpV2.x - Math.sin(dir) * dist * (center ? -1 : 1), tmpV2.y + 1.35, tmpV2.z - Math.cos(dir) * dist * (center ? -1 : 1));
     if (wardSnap) { camPos.copy(want); wardSnap = false; } else camPos.lerp(want, Math.min(1, dt * 5));
     camera.position.copy(camPos);
@@ -1632,13 +1708,15 @@ function placeCamera(rv, waterY, t, dt, lookH, distMul = 1) {
     return;
   }
   const d = rv.disp;
+  const focusX = cargo ? d.x + (cargo.x - d.x) * 0.32 : d.x;
+  const focusZ = cargo ? d.z + (cargo.z - d.z) * 0.32 : d.z;
   camH = camSnap ? lookH : lerpAng(camH, lookH, Math.min(1, dt * 1.8));
   const yaw = camH + camYawOff, hd = Math.cos(camPitch) * camDist * distMul;
-  const want = tmpV.set(d.x - Math.sin(yaw) * hd, waterY + 0.3 + Math.sin(camPitch) * camDist * distMul, d.z - Math.cos(yaw) * hd);
+  const want = tmpV.set(focusX - Math.sin(yaw) * hd, waterY + 0.3 + Math.sin(camPitch) * camDist * distMul, focusZ - Math.cos(yaw) * hd);
   if (camSnap) camPos.copy(want); else camPos.lerp(want, Math.min(1, dt * (nowS() - lastDragT < 0.3 ? 14 : 4)));
   camSnap = false;
   camera.position.copy(camPos);
-  camLook.set(d.x + Math.sin(yaw) * 2.5, waterY + 0.3, d.z + Math.cos(yaw) * 2.5);
+  camLook.set(focusX + Math.sin(yaw) * 2.5, waterY + 0.3, focusZ + Math.cos(yaw) * 2.5);
   camera.lookAt(camLook);
 }
 
@@ -1716,6 +1794,8 @@ function frameArena(t, dt, dtReal) {
   blendTheme(Math.min(1, dt * 0.8));
   arenaScene.update(t, dt, sn, extra);
   if (A.ball) arenaScene.placeBall(A.ball.x + A.ball.vx * P.rem, A.ball.z + A.ball.vz * P.rem, dt);
+  if (A.duck) arenaScene.placeDuck(A.duck, A.rafts, t, dt);
+  const teamLivery = A.mode === 'ball' || A.mode === 'tow';
   const teams = room && room.arena ? room.arena.teams : [];
   const colorOf = (id) => { const p = room && room.players.find(q => q.id === id); return SKINS[p ? p.skin : 0].css; };
   const rafts = new Map(sn.r.map(r => [r[0], r]));
@@ -1736,7 +1816,7 @@ function frameArena(t, dt, dtReal) {
     setRaftDirt(rv.model, R.dirt || 0);
     const n = R.hippos.length, half = sectorHalf(n);
     const sk = R.hippos.map(h => h.id + ':' + h.seat).join(',') + (room ? room.players.map(p => p.skin).join() : '');
-    if (sk !== rv.sectorKey) { rv.sectorKey = sk; const tcol = A.mode === 'ball' && teams[R.team] ? teams[R.team].color : null; setRaftSectors(rv.model, R.hippos.map(h => ({ seat: h.seat, color: tcol || colorOf(h.id) })), n, half, sectorCenter, null); }
+    if (sk !== rv.sectorKey) { rv.sectorKey = sk; const tcol = teamLivery && teams[R.team] ? teams[R.team].color : null; setRaftSectors(rv.model, R.hippos.map(h => ({ seat: h.seat, color: tcol || colorOf(h.id) })), n, half, sectorCenter, null); }
     rv.wake(R, dt, 0);
   }
   const seen = new Set();
@@ -1749,7 +1829,11 @@ function frameArena(t, dt, dtReal) {
   for (const id of [...hippos.keys()]) if (!seen.has(id)) removeHippo(id);
   // камера: над своим плотом (зритель — над серединой пруда)
   const mine = A.hippos.find(h => h.id === myId), mrv = mine && !outRaft.has(mine.raft) ? arenaRVs.get(mine.raft) : null;
-  if (mrv) placeCamera(mrv, 0, t, dt, Math.atan2(-mrv.disp.x, -mrv.disp.z), 1.35);
+  if (mrv) {
+    const R = A.rafts[mine.raft];
+    const heading = A.duck ? ((R.side ?? R.team) === 0 ? Math.PI / 2 : -Math.PI / 2) : Math.atan2(-mrv.disp.x, -mrv.disp.z);
+    placeCamera(mrv, 0, t, dt, heading, 1.35, A.duck?.owner === R.id ? A.duck : null);
+  }
   else {
     camH += dt * 0.08; const hd = Math.cos(0.9) * 34;
     camera.position.set(-Math.sin(camH + camYawOff) * hd, Math.sin(0.9) * 34, -Math.cos(camH + camYawOff) * hd); camera.lookAt(0, 0, 0);
@@ -1760,8 +1844,9 @@ function frameArena(t, dt, dtReal) {
   hudT += dt;
   if (hudT > 0.1) {
     hudT = 0;
-    renderTeam(A.hippos.map(h => { const hp = P.hp.get(h.id); return { id: h.id, seat: h.seat, flags: hp ? hp[8] : 0, n: A.rafts[h.raft].hippos.length, color: A.mode === 'ball' && teams[h.team] ? teams[h.team].color : null }; }));
+    renderTeam(A.hippos.map(h => { const hp = P.hp.get(h.id); return { id: h.id, seat: h.seat, flags: hp ? hp[8] : 0, n: A.rafts[h.raft].hippos.length, color: teamLivery && teams[h.team] ? teams[h.team].color : null }; }));
     renderArenaHud(sn);
+    if (A.duck) renderTowGuide(A, mine && A.rafts[mine.raft], sn);
   }
   $('timer').textContent = sn.ph === 'race' ? fmtTime(sn.left) : fmtTime(ARENA_MODES[A.mode].time);
   $('syncBadge').classList.add('hidden');
@@ -1774,9 +1859,40 @@ function modeGoalText(mode) {
   if (M.zombie) return 'больше всех очков к концу раунда';
   if (mode === 'king') return `до ${M.goal} очков в круге`;
   if (mode === 'ball') return `до ${M.goal} голов`;
+  if (mode === 'tow') return `до ${M.goal} доставок`;
   if (M.shoot) return `до ${M.goal} попаданий (вонь тоже считается)`;
   if (M.beans) return `до ${M.goal} очков бобами`;
   return `до ${M.goal} вырубленных коричневым дымом`;
+}
+function renderTowGuide(A, raft, sn) {
+  const active = sn.ph === 'race';
+  $('towGuide').classList.toggle('hidden', !active);
+  if (!active) return;
+  const duck = A.duck, towing = raft && duck.owner === raft.id;
+  const holder = A.rafts.find(r => r.id === duck.owner);
+  const ownDock = raft?.team === 0 ? 'причал с солнцем' : 'причал с якорем';
+  const side = raft ? towDockSide(raft.side ?? raft.team) : 0;
+  // Войти надо всем буксиром: рулевого ведём дальше створа, расстояние считаем для груза.
+  const x = towing ? side * ARENA_R : duck.x;
+  const z = towing ? 0 : duck.z;
+  const dx = x - (raft?.x ?? 0), dz = z - (raft?.z ?? 0);
+  const distance = towing
+    ? Math.hypot(Math.max(0, TOW_DOCK_X - side * duck.x), Math.max(0, Math.abs(duck.z) - TOW_DOCK_HALF))
+    : Math.hypot(dx, dz);
+  const action = towing ? 'Утка на тросе' : holder ? 'Перехватите утку' : 'Подцепите утку';
+  $('towAction').textContent = sn.waiting ? 'Ждём экипаж' : !raft ? 'С трибуны' : action;
+  $('towHint').textContent = sn.waiting ? 'Матч на паузе' : !raft ? (holder ? `Буксируют ${teamName(holder.team)}` : 'Утка свободна')
+    : towing ? `Тяните в ${ownDock}` : holder ? 'Подойдите к самому грузу' : 'Сбавьте газ рядом с ней';
+  $('towDistance').textContent = sn.waiting || !raft ? '' : `${Math.ceil(distance)} м`;
+  const needle = $('towNeedle');
+  needle.style.visibility = !raft || sn.waiting ? 'hidden' : '';
+  if (raft && !sn.waiting) {
+    const m = camera.matrixWorld.elements;
+    const horizontal = Math.hypot(m[8], m[10]) || 1;
+    const angle = Math.atan2(dx * m[0] + dz * m[2], -(dx * m[8] + dz * m[10]) / horizontal);
+    needle.style.transform = `rotate(${angle}rad)`;
+  }
+  $('timer').classList.toggle('overtime', !!sn.ot);
 }
 function renderArenaHud(sn) {
   const A = room && room.arena; if (!A) return;

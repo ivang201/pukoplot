@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ARENA_R, ARENA_MODES, KING_R, BALL_R, GOAL_HALF, arenaLayout, LAP_GATES, ISLAND_R, lapGateAng } from './arena.js';
 import { getThemeMats, obstacleMats, lumpy } from './level.js';
 import { stripeTex, swirlTex } from './textures.js';
+import { TowHarbor } from './tow-scene.js';
 
 const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0, ...extra });
 const WALL_R = ARENA_R + 0.45;
@@ -142,6 +143,8 @@ export class ArenaScene {
     const TM = getThemeMats(this.theme), B = obstacleMats();
     this.TM = TM;
     const root = this.root = new THREE.Group();
+    this.harbor = mode === 'tow' ? new TowHarbor(quality, ARENA_R) : null;
+    if (this.harbor) root.add(this.harbor.root);
     // вода
     const water = new THREE.Mesh(new THREE.CircleGeometry(ARENA_R + 3, 72), TM.water); water.rotation.x = -Math.PI / 2; water.position.y = -0.05; water.receiveShadow = true; root.add(water);
     const foam = new THREE.Mesh(new THREE.RingGeometry(ARENA_R - 1.2, ARENA_R + 0.1, 96), TM.foam); foam.rotation.x = -Math.PI / 2; foam.position.y = 0; foam.renderOrder = 1; root.add(foam);
@@ -160,7 +163,7 @@ export class ArenaScene {
     else if (!this.L.allSpikes) arcs.push([0, Math.PI * 2]);
     for (const [a0, a1] of arcs) {
       const g = new THREE.TorusGeometry(WALL_R, 0.5, 14, 120, a1 - a0); g.rotateX(-Math.PI / 2);
-      const m = new THREE.Mesh(g, TM.bumper); m.rotation.y = a0 - Math.PI / 2; m.position.y = 0.3; m.castShadow = true; m.receiveShadow = true; root.add(m);
+      const m = new THREE.Mesh(g, this.harbor?.bumperMaterial ?? TM.bumper); m.rotation.y = a0 - Math.PI / 2; m.position.y = 0.3; m.castShadow = true; m.receiveShadow = true; root.add(m);
     }
     const coneData = [];
     for (const sp of this.L.spikes) {
@@ -189,19 +192,28 @@ export class ArenaScene {
     this.messCtx = this.messCv.getContext('2d'); this.messScale = MS / ((ARENA_R + 1) * 2);
     this.messTex = new THREE.CanvasTexture(this.messCv); this.messTex.colorSpace = THREE.SRGBColorSpace;
     const mess = new THREE.Mesh(new THREE.PlaneGeometry((ARENA_R + 1) * 2, (ARENA_R + 1) * 2), new THREE.MeshBasicMaterial({ map: this.messTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+    this.messMaterial = mess.material;
     mess.rotation.x = -Math.PI / 2; mess.position.y = 0.015; mess.renderOrder = 2; root.add(mess);
     this.messDirty = false;
     // скалы и деревья вокруг
     let sd = (seed * 31 + 7) | 0; const rnd = () => { sd = (sd * 16807) % 2147483647; if (sd <= 0) sd += 2147483646; return sd / 2147483647; };
     const mesas = [], trees = [];
     for (let i = 0; i < 46; i++) { const a = i / 46 * Math.PI * 2 + rnd() * 0.1, r = ARENA_R + 11 + rnd() * 18, h = 4 + rnd() * 14; mesas.push({ x: Math.sin(a) * r, z: Math.cos(a) * r, y: 1.45 + h / 2 - 1, sx: 5 + rnd() * 7, sy: h, sz: 5 + rnd() * 7, ry: rnd() * 3 }); }
-    for (let i = 0; i < (quality >= 1 ? 40 : 14); i++) { const a = rnd() * Math.PI * 2, r = ARENA_R + 4.5 + rnd() * 6; trees.push({ x: Math.sin(a) * r, z: Math.cos(a) * r, s: 0.8 + rnd() * 0.7, r: rnd() * 6 }); }
+    for (let i = 0; i < (quality >= 1 ? 40 : 14); i++) {
+      const a = rnd() * Math.PI * 2, r = ARENA_R + 4.5 + rnd() * 6;
+      const tree = { x: Math.sin(a) * r, z: Math.cos(a) * r, s: 0.8 + rnd() * 0.7, r: rnd() * 6 };
+      if (!this.harbor?.hasBuilding(tree.x, tree.z)) trees.push(tree);
+    }
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sv = new THREE.Vector3();
-    const mi = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), TM.mesa, mesas.length);
-    mesas.forEach((r, k) => { q.setFromEuler(e.set(0, r.ry, 0)); m4.compose(v.set(r.x, r.y, r.z), q, sv.set(r.sx, r.sy, r.sz)); mi.setMatrixAt(k, m4); });
+    const cliff = this.harbor ? new THREE.CylinderGeometry(0.42, 0.78, 1, 7) : new THREE.BoxGeometry(1, 1, 1);
+    const mi = new THREE.InstancedMesh(cliff, this.harbor?.bluffMaterial ?? TM.mesa, mesas.length);
+    mesas.forEach((r, k) => {
+      const height = this.harbor ? r.sy * 0.53 : r.sy;
+      q.setFromEuler(e.set(0, r.ry, 0)); m4.compose(v.set(r.x, r.y - (r.sy - height) * 0.5, r.z), q, sv.set(r.sx, height, r.sz)); mi.setMatrixAt(k, m4);
+    });
     mi.receiveShadow = true; root.add(mi);
     const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.12, 0.2, 2.2, 6), TM.trunk, trees.length);
-    const crown = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), TM.crown, trees.length);
+    const crown = new THREE.InstancedMesh(this.harbor ? new THREE.ConeGeometry(1, 2.6, 7) : new THREE.IcosahedronGeometry(1, 0), TM.crown, trees.length);
     trees.forEach((t, k) => {
       const x = t.x + (mode === 'ball' ? goalBankOffset(t.x, t.z) : 0);
       q.setFromEuler(e.set(0, t.r, 0));
@@ -210,31 +222,34 @@ export class ArenaScene {
     });
     trunk.castShadow = crown.castShadow = true; root.add(trunk, crown);
     // флажки по кругу — арена всё-таки
-    const flagCols = mode === 'ball' ? [0xf77d32, 0x2469a0] : [0xff5a3c, 0xffd23f, 0x3cc6ff, 0x8ee04a];
-    const pennant = new THREE.BufferGeometry();
-    pennant.setAttribute('position', new THREE.Float32BufferAttribute([
-      0, 0.275, 0,  0.94, 0.19, 0.08,  0.7, -0.03, 0.06,  0.94, -0.27, 0.08,  0, -0.275, 0,
-    ], 3));
-    pennant.setIndex([0, 4, 2, 0, 2, 1, 2, 4, 3]); pennant.computeVertexNormals();
-    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.2, 6), flagPoleMaterial, 24);
-    const flags = new THREE.InstancedMesh(pennant, flagClothMaterial, 24), flagColor = new THREE.Color();
-    for (let i = 0; i < 24; i++) {
-      const a = i / 24 * Math.PI * 2, r = ARENA_R + 2.6, z = Math.cos(a) * r;
-      let x = Math.sin(a) * r;
-      if (mode === 'ball') x += goalBankOffset(x, z);
-      poles.setMatrixAt(i, m4.makeTranslation(x, 3, z));
-      flags.setMatrixAt(i, m4.makeRotationY(a + Math.PI / 2).setPosition(x, 4.25, z));
-      flags.setColorAt(i, flagColor.setHex(flagCols[i % flagCols.length]));
+    if (!this.harbor) {
+      const flagCols = mode === 'ball' ? [0xf77d32, 0x2469a0] : [0xff5a3c, 0xffd23f, 0x3cc6ff, 0x8ee04a];
+      const pennant = new THREE.BufferGeometry();
+      pennant.setAttribute('position', new THREE.Float32BufferAttribute([
+        0, 0.275, 0,  0.94, 0.19, 0.08,  0.7, -0.03, 0.06,  0.94, -0.27, 0.08,  0, -0.275, 0,
+      ], 3));
+      pennant.setIndex([0, 4, 2, 0, 2, 1, 2, 4, 3]); pennant.computeVertexNormals();
+      const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.2, 6), flagPoleMaterial, 24);
+      const flags = new THREE.InstancedMesh(pennant, flagClothMaterial, 24), flagColor = new THREE.Color();
+      for (let i = 0; i < 24; i++) {
+        const a = i / 24 * Math.PI * 2, r = ARENA_R + 2.6, z = Math.cos(a) * r;
+        let x = Math.sin(a) * r;
+        if (mode === 'ball') x += goalBankOffset(x, z);
+        poles.setMatrixAt(i, m4.makeTranslation(x, 3, z));
+        flags.setMatrixAt(i, m4.makeRotationY(a + Math.PI / 2).setPosition(x, 4.25, z));
+        flags.setColorAt(i, flagColor.setHex(flagCols[i % flagCols.length]));
+      }
+      root.add(poles, flags);
     }
-    root.add(poles, flags);
     // препятствия
     for (const o of this.L.obstacles) {
       let m;
       if (o.kind === 'rock') { m = lumpy(1, 1, o.x * 7 + o.z, B.boulder); m.scale.set(o.r * 1.05, o.r * 1.15, o.r * 1.05); m.position.set(o.x, 0.3, o.z); }
       else if (o.kind === 'buoy') {
         m = new THREE.Group();
-        const c = new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r * 1.1, 1.3, 24), std(0xffffff, { map: stripeTex('#ffffff', '#e8322a', 4), roughness: 0.4 })); c.position.y = 0.4; c.castShadow = true; m.add(c);
-        const top = new THREE.Mesh(new THREE.SphereGeometry(o.r, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2), std(0xe8322a, { roughness: 0.4 })); top.position.y = 1.05; m.add(top);
+        this.buoyMaterials ??= [std(0xffffff, { map: stripeTex('#ffffff', '#e8322a', 4), roughness: 0.4 }), std(0xe8322a, { roughness: 0.4 })];
+        const c = new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r * 1.1, 1.3, 24), this.buoyMaterials[0]); c.position.y = 0.4; c.castShadow = true; m.add(c);
+        const top = new THREE.Mesh(new THREE.SphereGeometry(o.r, 24, 10, 0, Math.PI * 2, 0, Math.PI / 2), this.buoyMaterials[1]); top.position.y = 1.05; m.add(top);
         m.position.set(o.x, 0, o.z);
       } else {
         m = new THREE.Group();
@@ -311,6 +326,7 @@ export class ArenaScene {
     this.clouds.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(140 * 3), 3);
     root.add(this.clouds);
     this.tmpC = new THREE.Color();
+    this.cloudTransform = new THREE.Object3D();
   }
   setNextGate(i) {
     if (!this.gates) return;
@@ -334,14 +350,14 @@ export class ArenaScene {
     }
     // облака: позиции из снимка, чуть вперёд по их скорости
     if (sn && sn.bl) {
-      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s = new THREE.Vector3();
+      const tr = this.cloudTransform, k = Math.exp(-1.6 * extra);
       let n = 0;
       for (const b of sn.bl) {
         if (n >= 140) break;
-        const [x, z, r, vx, vz, big, age] = b, k = Math.exp(-1.6 * extra);
-        q.setFromEuler(e.set(0, (x * 3 + z) % 6.28, 0));
-        m4.compose(v.set(x + vx * extra * k, 0.06 + n * 0.0005, z + vz * extra * k), q, s.set(r, 1, r));
-        this.clouds.setMatrixAt(n, m4);
+        const [x, z, r, vx, vz, big, age] = b;
+        tr.rotation.y = (x * 3 + z) % 6.28; tr.scale.set(r, 1, r);
+        tr.position.set(x + vx * extra * k, 0.06 + n * 0.0005, z + vz * extra * k); tr.updateMatrix();
+        this.clouds.setMatrixAt(n, tr.matrix);
         const fade = 1 - age;
         this.tmpC.setRGB(0.62 + 0.18 * (1 - fade), (big ? 0.45 : 0.56) + 0.2 * (1 - fade), 0.2 + 0.35 * (1 - fade)); this.clouds.setColorAt(n, this.tmpC);
         n++;
@@ -394,7 +410,13 @@ export class ArenaScene {
     if (d > 0.0001 && d < 4) b.rotateOnWorldAxis(this.ballAxis.set(dz / d, 0, -dx / d), d / BALL_R);
     b.position.set(x, BALL_R * 0.6 + Math.sin(performance.now() / 400) * 0.05, z);
   }
-  dispose() { this.root.traverse(o => { if (o.isInstancedMesh) o.dispose(); if (o.geometry) o.geometry.dispose(); }); }
+  placeDuck(state, rafts, t, dt) { this.harbor?.placeDuck(state, rafts, t, dt); }
+  dispose() {
+    if (this.harbor) { this.root.remove(this.harbor.root); this.harbor.dispose(); }
+    this.root.traverse(o => { if (o.isInstancedMesh) o.dispose(); if (o.geometry) o.geometry.dispose(); });
+    for (const material of this.buoyMaterials ?? []) material.dispose();
+    this.messTex.dispose(); this.messMaterial.dispose(); this.cloudMat.map.dispose(); this.cloudMat.dispose(); this.swirl.material.dispose();
+  }
 }
 
 // ------------------------------------------------------------

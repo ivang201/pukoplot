@@ -15,6 +15,7 @@ import {
   botDecide, medalFor, medalTimes, RAFT_SHAPES, DAILY, dailySeed, dailyMutator, localDate, CENTER_SEAT,
 } from './public/shared.js';
 import { ARENA_MODES, isArenaMode, createArena, arenaStep, resetBall, arenaRadius, PICKUPS, megaFart, ARENA_EVENTS, LAP_GATES } from './public/arena.js';
+import { towSnapshot } from './public/tow.js';
 import { createWorld, newHippo, resetRaft, simStep, DT, raceMega } from './public/sim.js';
 import { ACHIEVEMENTS, ACH, TIER } from './public/achievements.js';
 import { cleanLook, DEFAULT_LOOK, perkMods, perksOf, ITEM, RARITY, BOX_ITEMS } from './public/cosmetics.js';
@@ -51,6 +52,8 @@ let currentResults = null;
 let rules = { ...DEFAULT_RULES };
 // Арена: режим, мир, очки команд, турнирная таблица (живёт, пока хост не сбросит)
 let gameMode = 'race', AW = null, arenaTeams = [], score = [], resetBallAt = 0, arenaStat = null;
+let towRound = null, towSidesSwapped = false;
+const TOW_REJOIN_SECONDS = 12, TOW_EXTRA_SECONDS = 15;
 const TEAM_COLORS = ['#ff8a1f', '#2b9be0'];
 let tour = { rounds: 0, rows: {} };
 const PLACE_PTS = [5, 3, 2, 1, 0];
@@ -61,12 +64,15 @@ const racers = () => [...players.values()].filter(p => p.seat >= 0).sort((a, b) 
 const humans = () => [...players.values()].filter(p => p.named && !p.isBot);
 const byHippo = (h) => players.get(h.id);
 const inRace = () => phase === 'race';
+const towPractice = () => phase !== 'lobby' && !!towRound?.practice;
+const effectiveRules = () => gameMode === 'tow' ? { ...rules, raft: 'round', perks: false, events: false, pickups: false } : rules;
 
 function syncWorldHippos() { W.hippos = racers().map(p => { p.h.seat = p.seat; return p.h; }); }
 function assignSeats() {
+  if (towRound && phase !== 'lobby') { syncWorldHippos(); return; }
   if (phase === 'race' || phase === 'count') { racers().forEach((p, i) => p.seat = i); syncWorldHippos(); return; }
-  const all = [...players.values()].filter(p => p.named).sort((a, b) => a.joinOrder - b.joinOrder);
-  for (const p of players.values()) if (!p.named) p.seat = -1;
+  const all = [...players.values()].filter(p => p.named && !(gameMode === 'tow' && p.isBot)).sort((a, b) => a.joinOrder - b.joinOrder);
+  for (const p of players.values()) p.seat = -1;
   all.forEach((p, i) => p.seat = i < MAX_PLAYERS ? i : -1);
   syncWorldHippos();
   resetRaft(W, W.raft.cpS || 3);
@@ -98,6 +104,7 @@ function sendMe(p) { if (p.profile) p.conn.send(JSON.stringify({ t: 'me', p: pro
 function markDirty(p) { if (p.profile) dirtyProfiles.add(p.profile); }
 
 function grant(p, id) {
+  if (towPractice()) return;
   const pr = p && p.profile; if (!pr || !ACH[id] || pr.data.ach[id]) return;
   pr.data.ach[id] = Date.now();
   pr.ach_count = Object.keys(pr.data.ach).length;
@@ -112,6 +119,7 @@ function grant(p, id) {
 const BY_STAT = {};
 for (const a of ACHIEVEMENTS) if (a.kind === 'count' || a.kind === 'max') (BY_STAT[a.stat] = BY_STAT[a.stat] || []).push(a);
 function bump(p, stat, v = 1, force = false) {
+  if (towPractice()) return;
   const pr = p && p.profile; if (!pr || !force && !inRace() && stat !== 'emotes') return;
   pr.data.s[stat] = (pr.data.s[stat] || 0) + v;
   markDirty(p);
@@ -188,6 +196,7 @@ function questCheck(p, stat) {
   }
 }
 function addCoins(p, n, why, silent = false) {
+  if (towPractice()) return;
   const pr = p && p.profile; if (!pr || !(n > 0)) return;
   ensureEco(pr.data);
   pr.data.coins += n; markDirty(p);
@@ -256,7 +265,7 @@ function shop(p, m) {
 // Бафы легендарок — одинаково на сервере и у всех в браузере (по составу комнаты)
 function applyPerks() {
   for (const p of players.values()) {
-    const mods = perkMods(p.look, rules.perks !== false);
+    const mods = perkMods(p.look, gameMode !== 'tow' && rules.perks !== false);
     p.h.pk = mods; if (p.ah) p.ah.pk = mods;
   }
 }
@@ -266,7 +275,7 @@ const ULT = { race: 1 / 90, arena: 1 / 50, lobby: 1 / 4 };
 let nextEvt = 0, zTick = 0;
 function arenaExtras() {
   const M = ARENA_MODES[gameMode];
-  if (rules.events !== false && gameMode !== 'ball') {
+  if (rules.events !== false && gameMode !== 'ball' && gameMode !== 'tow') {
     if (!nextEvt) nextEvt = simT + 22 + Math.random() * 10;
     if (simT >= nextEvt) {
       const kinds = Object.keys(ARENA_EVENTS), k = kinds[(Math.random() * kinds.length) | 0], E = ARENA_EVENTS[k];
@@ -288,7 +297,7 @@ function arenaExtras() {
 function chargeUlt(h, v) { if (h && rules.ult !== false) h.ult = Math.min(1, (h.ult || 0) + v * ((h.pk && h.pk.ult) || 1) * DEV.ult); }
 function chargeTeam(team, v) { const t = arenaTeams[team]; if (t) for (const id of t.members) { const q = players.get(id); if (q) chargeUlt(q.ah, v); } }
 function doMega(p) {
-  if (rules.ult === false || !(phase === 'race' || phase === 'lobby')) return;
+  if (rules.ult === false || towRound?.pausedAt != null || !(phase === 'race' || phase === 'lobby')) return;
   const T = simT;
   if (isArenaMode(gameMode) && AW) {
     const h = p.ah; if (!h || (h.ult || 0) < 1) return;
@@ -397,24 +406,39 @@ function comboCheck(p) { const r = race && p && race.p[p.id]; if (r && r.misfire
 //  Арена
 // ------------------------------------------------------------
 const arenaPlayers = () => racers().filter(p => !p.isBot);
+function towTeams(ps) {
+  const teams = [{ id: 0, members: [] }, { id: 1, members: [] }], newcomers = [];
+  for (const p of ps) {
+    const previous = towRound?.roster.get(p.id)?.hippo.team;
+    if (previous == null || ps.length === 1) newcomers.push(p.id);
+    else teams[previous].members.push(p.id);
+  }
+  let a = teams[0].members, b = teams[1].members;
+  for (const id of newcomers) (a.length <= b.length ? a : b).push(id);
+  if (a.length < b.length) [a, b] = [b, a];
+  while (a.length > b.length + 1) b.push(a.pop());
+  return teams;
+}
 function makeTeams() {
   const ps = arenaPlayers(), M = ARENA_MODES[gameMode], teams = [];
-  if (gameMode === 'ball') { for (let t = 0; t < 2; t++) teams.push({ id: t, members: ps.filter((_, i) => i % 2 === t).map(p => p.id) }); }
+  if (gameMode === 'tow') teams.push(...towTeams(ps));
+  else if (M.teams === 2) { for (let t = 0; t < 2; t++) teams.push({ id: t, members: ps.filter((_, i) => i % 2 === t).map(p => p.id) }); }
   else if (M.per === 2) { for (let i = 0; i < ps.length; i += 2) teams.push({ id: teams.length, members: ps.slice(i, i + 2).map(p => p.id) }); }
   else ps.forEach((p, i) => teams.push({ id: i, members: [p.id] }));
   for (const t of teams) { const p = players.get(t.members[0]); t.shape = (p && p.look && p.look.raft) || 'round'; t.rskin = (p && p.look && p.look.rskin) || 'classic'; }
+  if (gameMode === 'tow') for (const t of teams) { t.side = towSidesSwapped ? 1 - t.id : t.id; t.shape = 'round'; }
   return teams.filter(t => t.members.length);
 }
 function teamName(t) {
-  if (gameMode === 'ball') return t.id === 0 ? 'Оранжевые' : 'Синие';
+  if (ARENA_MODES[gameMode].teams === 2) return t.id === 0 ? 'Оранжевые' : 'Синие';
   return t.members.map(id => (players.get(id) || {}).name || '?').join(' + ');
 }
-function teamColor(t) { if (gameMode === 'ball') return TEAM_COLORS[t.id]; const p = players.get(t.members[0]); return p ? SKINS[p.skin].css : '#999'; }
+function teamColor(t) { if (ARENA_MODES[gameMode].teams === 2) return TEAM_COLORS[t.id]; const p = players.get(t.members[0]); return p ? SKINS[p.skin].css : '#999'; }
 function buildArena() {
   for (const p of players.values()) p.ah = null;
   arenaTeams = makeTeams();
   AW = createArena(gameMode, arenaTeams, seed);
-  AW.rules = rules;
+  AW.rules = effectiveRules();
   for (const h of AW.hippos) { const p = players.get(h.id); if (p) p.ah = h; }
   score = arenaTeams.map(() => 0);
   aLives = arenaTeams.map(() => ARENA_MODES[gameMode].lives || 0);
@@ -423,11 +447,15 @@ function buildArena() {
 }
 function arenaInfo() {
   if (!isArenaMode(gameMode) || !AW) return null;
-  return { mode: gameMode, seed, teams: arenaTeams.map(t => ({ id: t.id, name: teamName(t), color: teamColor(t), members: t.members, shape: t.shape, rskin: t.rskin })), score };
+  return { mode: gameMode, seed, teams: arenaTeams.map(t => ({ id: t.id, side: t.side, name: teamName(t), color: teamColor(t), members: t.members, shape: t.shape, rskin: t.rskin })), score,
+    ...(gameMode === 'tow' ? { practice: towRound?.practice ?? arenaTeams.length < 2, waiting: towRound?.pausedAt != null } : {}) };
 }
 function setMode(m) {
+  const updateTowSeats = gameMode === 'tow' || m === 'tow';
+  if (m !== gameMode) { towRound = null; towSidesSwapped = false; }
   gameMode = isArenaMode(m) ? m : 'race';
-  if (isArenaMode(gameMode)) { seed = (Math.random() * 1e6) | 0; buildArena(); } else { AW = null; for (const p of players.values()) p.ah = null; }
+  if (isArenaMode(gameMode)) { seed = (Math.random() * 1e6) | 0; if (!updateTowSeats) buildArena(); } else { AW = null; for (const p of players.values()) p.ah = null; }
+  if (updateTowSeats) assignSeats();
 }
 const aPlayerOf = (h) => players.get(h.id);
 const hungerLike = () => !!(ARENA_MODES[gameMode] && ARENA_MODES[gameMode].ko);
@@ -438,6 +466,12 @@ function addScore(team, n = 1) {
   if (score[team] >= ARENA_MODES[gameMode].goal) finishArena(now(), team);
 }
 const AEV = {
+  delivery(team) {
+    if (phase !== 'race' || !towRound || towRound.pausedAt != null || !arenaTeams[team]) return;
+    score[team]++;
+    broadcast({ t: 'ev', k: 'delivery', team, score: score.slice() });
+    if (score[team] >= AW.M.goal || towRound.overtime) finishArena(simT, team);
+  },
   back(h) { broadcast({ t: 'ev', k: 'back', id: h.id }); },
   fartStart(h) { bump(aPlayerOf(h), 'farts'); },
   fartTick(h) { const p = aPlayerOf(h); bump(p, 'fartTime', DT); },
@@ -524,14 +558,17 @@ const AEV = {
 };
 function finishArena(T, winTeam = -1, aborted = false) {
   if (phase !== 'race') return;
+  const elapsed = (towRound?.pausedAt ?? T) - raceStart;
+  const competitive = !aborted && !towRound?.practice;
+  if (towRound) towRound.pausedAt = null;
   phase = 'results';
   const M = ARENA_MODES[gameMode];
   const order = arenaTeams.map((t, i) => ({ t, i, sc: score[i], fn: t.members.reduce((a, id) => a + (arenaStat.faints[id] || 0), 0) }))
     .sort((a, b) => (b.i === winTeam) - (a.i === winTeam) || b.sc - a.sc || a.fn - b.fn);
   let place = 0;
   const table = order.map((o, k) => { if (k > 0 && !(o.sc === order[k - 1].sc && o.i !== winTeam && order[k - 1].i !== winTeam)) place = k; return { ...o, place }; });
-  if (!aborted) tour.rounds++;
-  for (const r of aborted ? [] : table) for (const id of r.t.members) {
+  if (competitive) tour.rounds++;
+  for (const r of competitive ? table : []) for (const id of r.t.members) {
     const p = players.get(id); if (!p) continue;
     addCoins(p, EARN.arenaRound + (r.place === 0 && r.i === winTeam ? EARN.arenaWin : 0), r.place === 0 && r.i === winTeam ? 'победа' : 'раунд');
     const key = p.name.toLowerCase();
@@ -554,11 +591,12 @@ function finishArena(T, winTeam = -1, aborted = false) {
     if (row.pts >= 25) grant(p, 'champ');
   }
   const res = {
-    arena: true, mode: gameMode, time: T - raceStart, winner: winTeam, aborted,
-    teams: table.map(r => ({ name: teamName(r.t), color: teamColor(r.t), score: r.sc, place: r.place, members: r.t.members.map(id => { const p = players.get(id); return { id, name: p ? p.name : '?', kos: arenaStat.kos[id] || 0, faints: arenaStat.faints[id] || 0 }; }) })),
+    arena: true, mode: gameMode, time: elapsed, winner: winTeam, aborted,
+    ...(towRound ? { practice: towRound.practice, ot: towRound.overtime } : {}),
+    teams: table.map(r => ({ name: teamName(r.t), color: teamColor(r.t), score: r.sc, place: r.place, members: r.t.members.map(id => { const p = players.get(id); return { id, name: p?.name ?? towRound?.roster.get(id)?.name ?? '?', kos: arenaStat.kos[id] || 0, faints: arenaStat.faints[id] || 0 }; }) })),
     tour: tourOut(),
   };
-  store.addRace({ mode: 'arena-' + gameMode, level: -1, time: T - raceStart, dist: 0, team: arenaPlayers().map(p => p.name), crashes: 0 }).catch(() => {});
+  if (!towRound?.practice) store.addRace({ mode: 'arena-' + gameMode, level: -1, time: elapsed, dist: 0, team: arenaPlayers().map(p => p.name), crashes: 0 }).catch(() => {});
   publishResults(res);
   flushProfiles();
 }
@@ -567,6 +605,10 @@ function startArenaCountdown() {
   if (arenaPlayers().length < 1) return;
   seed = (Math.random() * 1e6) | 0;
   buildArena();
+  if (gameMode === 'tow') {
+    const roster = new Map(arenaPlayers().map(p => [p.id, { profileId: p.profile.id, name: p.name, seat: p.seat, joinOrder: p.joinOrder, hippo: p.ah }]));
+    towRound = { roster, practice: arenaTeams.length === 1, overtime: false, pausedAt: null };
+  }
   phase = 'count'; countEnd = now() + 3.2; resetBallAt = 0; AW.startT = 0; AW.event = null; nextEvt = 0; zTick = 0;
   arenaStat = { kos: {}, faints: {}, koT: {}, conceded: {}, megaKo: {} };
   for (const h of AW.hippos) h.ult = 0;
@@ -671,7 +713,7 @@ function publishResults(r) {
   sendRoom();
 }
 
-function backToLobby() { phase = 'lobby'; assignSeats(); if (isArenaMode(gameMode)) seed = (Math.random() * 1e6) | 0, buildArena(); W.raft.cp = -1; W.raft.cpS = 3; W.puddles = []; resetRaft(W, 3); sendRoom(); }
+function backToLobby() { phase = 'lobby'; towRound = null; towSidesSwapped = false; assignSeats(); if (isArenaMode(gameMode)) seed = (Math.random() * 1e6) | 0, buildArena(); W.raft.cp = -1; W.raft.cpS = 3; W.puddles = []; resetRaft(W, 3); sendRoom(); }
 
 // ------------------------------------------------------------
 //  Сообщения
@@ -688,7 +730,7 @@ function sendRoom() {
     pinned: p.profile ? p.profile.data.pinned : [], achCount: p.profile ? p.profile.ach_count : 0, prof: !!p.profile, lvl: p.profile ? levelOf(p.profile.data.xp || 0).lvl : 0,
   }));
   broadcast({
-    t: 'room', players: list, host: hostId, level: levelIdx, seed, phase, records, rules,
+    t: 'room', players: list, host: hostId, level: levelIdx, seed, phase, records, rules: effectiveRules(),
     mode: gameMode, arena: arenaInfo(), tour: tourOut(), daily: { date: localDate(), seed: dailySeed(localDate()) },
     levels: LEVELS.map(l => ({ name: l.name, desc: l.desc, theme: l.theme })),
   });
@@ -738,12 +780,47 @@ function emote(p, n, T) {
   bump(p, 'emotes');
 }
 
+function sendWelcome(p) {
+  const shirtOverrides = SKINS.flatMap((_, i) => fs.existsSync(path.join(PUBLIC, 'shirts', `${i + 1}.png`)) ? [i + 1] : []);
+  p.conn.send(JSON.stringify({ t: 'welcome', id: p.id, addrs: lanAddresses(), port: PORT, db: store.kind, shirtOverrides }));
+}
 function onOpen(conn) {
   const p = makePlayer(conn);
   players.set(p.id, p); conn.player = p;
-  const shirtOverrides = SKINS.flatMap((_, i) => fs.existsSync(path.join(PUBLIC, 'shirts', `${i + 1}.png`)) ? [i + 1] : []);
-  conn.send(JSON.stringify({ t: 'welcome', id: p.id, addrs: lanAddresses(), port: PORT, db: store.kind, shirtOverrides }));
+  sendWelcome(p);
   sendRoom();
+}
+
+function restoreTowSeat(p) {
+  if (!towRound) return;
+  for (const [id, slot] of towRound.roster) {
+    if (slot.profileId !== p.profile.id || players.has(id)) continue;
+    // Reuse the authenticated player's original ID so physics, tournament stats and team slots agree.
+    players.delete(p.id);
+    p.id = p.h.id = id; p.seat = slot.seat; p.joinOrder = slot.joinOrder; p.ah = slot.hippo;
+    players.set(id, p);
+    sendWelcome(p);
+    return;
+  }
+}
+function updateTowPause(T) {
+  if (!towRound || (phase !== 'race' && phase !== 'count')) return;
+  const missingCrew = arenaTeams.some(t => t.members.every(id => !players.has(id)));
+  if (missingCrew && towRound.pausedAt == null) towRound.pausedAt = T;
+  if (!missingCrew && towRound.pausedAt != null) {
+    const delay = T - towRound.pausedAt;
+    if (phase === 'count') countEnd += delay;
+    else { raceStart += delay; AW.startT += delay; }
+    if (AW.duck.lockUntil > towRound.pausedAt) AW.duck.lockUntil += delay;
+    // Physics deadlines are absolute server times. Preserve the remaining stun, respawn and thrust durations.
+    for (const R of AW.rafts) {
+      for (const k of ['statusT', 'lastHitT', 'lastEject', 'invulnUntil', 'shieldUntil']) if (R[k] > 0) R[k] += delay;
+    }
+    for (const h of AW.hippos) {
+      for (const k of ['idleSince', 'fartStart', 'lastFart', 'overUntil', 'stunUntil', 'offUntil', 'faintUntil', 'faintCd']) if (h[k] > 0) h[k] += delay;
+    }
+    towRound.pausedAt = null;
+  }
 }
 
 async function onMessage(conn, data) {
@@ -752,9 +829,13 @@ async function onMessage(conn, data) {
   const isHost = p.id === hostId;
   switch (m.t) {
     case 'hello': {
+      if (towRound && p.named) return;
       const res = await login(p, m).catch(e => ({ fail: 'Ошибка базы данных: ' + e.message }));
-      if (!players.has(p.id)) return;
+      if (players.get(p.id) !== p || (towRound && p.named)) return;
       if (res.fail) { conn.send(JSON.stringify({ t: 'authfail', reason: res.fail })); return; }
+      if (towRound && [...players.values()].some(q => q !== p && q.profile?.name_key === res.pr.name_key)) {
+        conn.send(JSON.stringify({ t: 'authfail', reason: 'Бегемот с таким именем уже на плоту' })); return;
+      }
       p.profile = res.pr; p.name = res.pr.name;
       const d = res.pr.data;
       p.skin = freeSkin(typeof m.skin === 'number' ? m.skin : d.skin);
@@ -763,8 +844,9 @@ async function onMessage(conn, data) {
       p.look = cleanLook(m.look || d.look, d.ach, d.inv);
       d.look = p.look; d.skin = p.skin; markDirty(p);
       if (!p.named) { p.named = true; p.joinOrder = nextId++; }
+      restoreTowSeat(p);
       if (!hostId || !players.has(hostId) || !players.get(hostId).named || players.get(hostId).isBot) hostId = p.id;
-      assignSeats(); sendRoom(); sendMe(p);
+      assignSeats(); updateTowPause(simT); sendRoom(); sendMe(p);
       if (phase === 'results' && currentResults) conn.send(JSON.stringify({ t: 'results', r: currentResults }));
       if (welcome) conn.send(JSON.stringify({ t: 'welcomeGift', coins: welcome }));
       broadcast({ t: 'ev', k: 'join', name: p.name });
@@ -820,15 +902,23 @@ async function onMessage(conn, data) {
       rules = {
         faint: !!r.faint, faintTime: Math.max(1, Math.min(6, +r.faintTime || 3)),
         misfire: MISFIRE_LEVELS.some(x => x.v === +r.misfire) ? +r.misfire : DEFAULT_RULES.misfire,
-        burps: r.burps !== false, lives: Math.max(1, Math.min(9, +r.lives || 5)), raft: RAFT_SHAPES[r.raft] ? r.raft : 'round', pickups: r.pickups !== false,
-        perks: r.perks !== false, ult: r.ult !== false, events: r.events !== false,
+        burps: r.burps !== false, lives: Math.max(1, Math.min(9, +r.lives || 5)), raft: gameMode === 'tow' ? rules.raft : RAFT_SHAPES[r.raft] ? r.raft : 'round',
+        pickups: gameMode === 'tow' ? rules.pickups : r.pickups !== false, perks: gameMode === 'tow' ? rules.perks : r.perks !== false,
+        ult: r.ult !== false, events: gameMode === 'tow' ? rules.events : r.events !== false,
       };
-      W.rules = rules; if (AW) AW.rules = rules; sendRoom();
+      W.rules = rules; if (AW) AW.rules = effectiveRules(); sendRoom();
     } break;
     case 'level': if (isHost && phase === 'lobby') { setLevel(m.level); sendRoom(); } break;
     case 'start': if (isHost && phase === 'lobby') { if (typeof m.level === 'number' && m.level !== levelIdx) setLevel(m.level); startCountdown(); } break;
-    case 'again': if (isHost && phase === 'results') { phase = 'lobby'; assignSeats(); startCountdown(); } break;
-    case 'next': if (isHost && phase === 'results') { phase = 'lobby'; if (!isArenaMode(gameMode)) setLevel(levelIdx >= ENDLESS ? (levelIdx === ENDLESS ? 0 : ENDLESS) : levelIdx + 1); assignSeats(); startCountdown(); } break;
+    case 'again':
+    case 'next':
+      if (isHost && phase === 'results') {
+        phase = 'lobby';
+        if (gameMode === 'tow') towSidesSwapped = !towSidesSwapped;
+        if (m.t === 'next' && !isArenaMode(gameMode)) setLevel(levelIdx >= ENDLESS ? (levelIdx === ENDLESS ? 0 : ENDLESS) : levelIdx + 1);
+        assignSeats(); startCountdown();
+      }
+      break;
     case 'lobby': if (isHost && phase === 'results') backToLobby(); break;
     case 'abort': if (isHost && (phase === 'race' || phase === 'count')) { if (isArenaMode(gameMode) && phase === 'race') finishArena(now(), -1, true); else if (levelIdx >= ENDLESS && !isArenaMode(gameMode) && phase === 'race') finishEndless(now(), true); else backToLobby(); } break;
     case 'addbot': if (isHost && phase === 'lobby') addBot(); break;
@@ -842,12 +932,14 @@ async function onMessage(conn, data) {
 
 function onClose(conn) {
   const p = conn.player; if (!p) return;
+  if (towRound && p.ah) Object.assign(p.ah, { inFart: false, inCrawl: 0, inAim: null, inShoot: false });
   players.delete(p.id);
   if (p.profile) { markDirty(p); flushProfiles(); }
   if (hostId === p.id) { const nx = humans().sort((a, b) => a.joinOrder - b.joinOrder)[0]; hostId = nx ? nx.id : 0; }
   if (!humans().length) for (const q of [...players.values()]) if (q.isBot) players.delete(q.id);
   assignSeats();
-  if (phase !== 'lobby' && (!racers().length || !humans().length)) backToLobby();
+  if (towRound && (phase === 'race' || phase === 'count')) updateTowPause(simT);
+  else if (phase !== 'lobby' && (!racers().length || !humans().length)) backToLobby();
   if (p.named) broadcast({ t: 'ev', k: 'leave', name: p.name });
   sendRoom();
 }
@@ -864,6 +956,13 @@ function loop() {
   let steps = 0;
   while (simT + DT <= t && steps < 12) {
     simT += DT; steps++; sinceSend++;
+    if (towRound?.pausedAt != null) {
+      if (simT - towRound.pausedAt >= TOW_REJOIN_SECONDS) {
+        if (phase === 'race' && humans().length) finishArena(simT, -1, true);
+        else backToLobby();
+      }
+      continue;
+    }
     if (phase === 'count' && simT >= countEnd) { phase = 'race'; raceStart = simT; goT = simT; if (AW) AW.startT = simT; broadcast({ t: 'ev', k: 'go' }); sendRoom(); }
     if (gameOverAt && simT >= gameOverAt && phase === 'race') { gameOverAt = 0; finishEndless(simT); }
     if (rules.ult !== false && (phase === 'race' || phase === 'lobby')) {
@@ -876,9 +975,12 @@ function loop() {
       if (phase === 'lobby') for (const R of AW.rafts) R.invulnUntil = simT + 0.5;     // в лобби арены плоты не лопаются
       arenaStep(AW, simT, { canFart: play, physics: play, crawl: phase !== 'results', predict: false }, AEV);
       if (phase === 'race') arenaExtras();
-      if (phase === 'race' && simT - raceStart >= ARENA_MODES[gameMode].time) {      // время вышло — побеждает лидер (при ничьей — ничья)
+      if (phase === 'race' && simT - raceStart >= ARENA_MODES[gameMode].time + (towRound?.overtime ? TOW_EXTRA_SECONDS : 0)) {
         const mx = Math.max(...score), lead = score.filter(v => v === mx).length === 1 ? score.indexOf(mx) : -1;
-        finishArena(simT, lead);
+        if (towRound && !towRound.practice && !towRound.overtime && lead < 0) {
+          towRound.overtime = true;
+          broadcast({ t: 'ev', k: 'overtime', sec: TOW_EXTRA_SECONDS });
+        } else finishArena(simT, towRound?.practice ? -1 : lead);
       }
       continue;
     }
@@ -898,12 +1000,16 @@ function loop() {
   const arenaNow = isArenaMode(gameMode) && AW;
   if (arenaNow && sinceSend >= 2) {
     sinceSend = 0; lastBroadcast = t;
-    const r1 = (v) => Math.round(v * 10) / 10, fl = (h) => (h.offUntil > simT ? 1 : 0) | (simT < h.overUntil ? 2 : 0) | (simT < h.stunUntil ? 4 : 0) | (h.fartOn && simT - h.fartStart < PHYS.burstTime ? 8 : 0) | (h.fartOn && h.gas < PHYS.sprayGas ? 16 : 0) | (simT < h.faintUntil ? 32 : 0);
+    const clock = towRound?.pausedAt ?? simT;
+    const timeLimit = ARENA_MODES[gameMode].time + (towRound?.overtime ? TOW_EXTRA_SECONDS : 0);
+    const elapsed = phase === 'race' ? clock - raceStart : (towRound && phase === 'results' ? currentResults?.time ?? 0 : 0);
+    const r1 = (v) => Math.round(v * 10) / 10, fl = (h) => (h.offUntil > clock ? 1 : 0) | (clock < h.overUntil ? 2 : 0) | (clock < h.stunUntil ? 4 : 0) | (h.fartOn && clock - h.fartStart < PHYS.burstTime ? 8 : 0) | (h.fartOn && h.gas < PHYS.sprayGas ? 16 : 0) | (clock < h.faintUntil ? 32 : 0);
     broadcast({
       t: 'a', T: r3(simT), ph: phase, mode: gameMode,
-      rt: phase === 'race' ? r3(simT - raceStart) : (phase === 'count' ? r3(-(countEnd - simT)) : 0),
-      left: phase === 'race' ? Math.max(0, Math.round(ARENA_MODES[gameMode].time - (simT - raceStart))) : ARENA_MODES[gameMode].time,
-      r: AW.rafts.map(R => [R.id, r3(R.x), r3(R.z), r3(R.a), r3(R.w), r2(R.vx), r2(R.vz), R.status, simT < R.invulnUntil ? 1 : 0, r2(R.dirt), (simT < R.boostUntil ? 1 : 0) | (simT < R.shieldUntil ? 2 : 0) | (R.out ? 4 : 0) | (R.inf ? 8 : 0) | (AW.bomb.raft === R.id ? 16 : 0) | (simT < R.magnetUntil ? 32 : 0), R.gate, R.lap]),
+      rt: phase === 'race' ? r3(clock - raceStart) : (phase === 'count' ? r3(-(countEnd - clock)) : 0),
+      left: Math.max(0, AW.duck ? Math.ceil(timeLimit - elapsed) : Math.round(timeLimit - elapsed)),
+      ...(AW.duck ? { duck: towSnapshot(AW.duck), ot: !!towRound?.overtime, waiting: towRound?.pausedAt != null, practice: towRound?.practice ?? arenaTeams.length < 2 } : {}),
+      r: AW.rafts.map(R => [R.id, r3(R.x), r3(R.z), r3(R.a), r3(R.w), r2(R.vx), r2(R.vz), R.status, clock < R.invulnUntil ? 1 : 0, r2(R.dirt), (clock < R.boostUntil ? 1 : 0) | (clock < R.shieldUntil ? 2 : 0) | (R.out ? 4 : 0) | (R.inf ? 8 : 0) | (AW.bomb.raft === R.id ? 16 : 0) | (clock < R.magnetUntil ? 32 : 0), R.gate, R.lap]),
       hp: AW.hippos.map(h => [h.id, h.raft, h.seat, r3(h.pos), r2(h.vel), h.fartOn ? 1 : 0, r2(h.gas), r2(h.heat), fl(h), r2(h.dirt), r2(h.ult || 0)]),
       bl: AW.blobs.map(b => [r1(b.x), r1(b.z), r2(b.r), r1(b.vx), r1(b.vz), b.big ? 1 : 0, r2(b.age / b.life), b.team]),
       b: AW.ball ? [r3(AW.ball.x), r3(AW.ball.z), r2(AW.ball.vx), r2(AW.ball.vz)] : null,

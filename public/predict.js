@@ -5,6 +5,7 @@
 // ============================================================
 import { createWorld, newHippo, simStep, DT } from './sim.js';
 import { arenaStep } from './arena.js';
+import { loadTowSnapshot } from './tow.js';
 import { NOMODS } from './cosmetics.js';
 
 const BIG = 1e9;
@@ -24,7 +25,10 @@ export class Predictor {
   setPerks(map) { this.perks = map; }
   setTrack(tr) { this.W = createWorld(tr); this.pwH.clear(); this.puddles = []; this.kind = 'race'; }
   // арена: мир строит клиент по составу команд (createArena), сюда — только подменять состояние
-  setArena(A) { this.A = A; this.kind = 'arena'; this.aH = new Map(A.hippos.map(h => [h.id, h])); if (this.snap && this.snap.t !== 'a') this.snap = null; }
+  setArena(A) {
+    if (this.snap && (this.snap.t !== 'a' || (this.snap.mode && this.snap.mode !== A.mode) || (this.A && A.duck))) this.snap = null;
+    this.A = A; this.kind = 'arena'; this.aH = new Map(A.hippos.map(h => [h.id, h]));
+  }
   reset() { this.snap = null; this.samples = []; this.clockOff = null; }
   lead() { return clamp(this.rtt * 0.5, 0.004, 0.2); }
   // Часы сервера: берём ответ с самым маленьким пингом из последних
@@ -108,6 +112,7 @@ export class Predictor {
       h.pk = this.perks.get(h.id) || NOMODS;
     }
     if (A.ball && sn.b) { const B = A.ball; B.x = sn.b[0]; B.z = sn.b[1]; B.vx = sn.b[2]; B.vz = sn.b[3]; A.ballFreeze = (sn.b[2] === 0 && sn.b[3] === 0 && Math.hypot(B.x, B.z) > 24) ? BIG : 0; }
+    if (A.duck && sn.duck) loadTowSnapshot(A.duck, sn.duck);
   }
   // Прокрутить мир до «сейчас + упреждение». Возвращает false, если ещё нечего показывать.
   run(t) {
@@ -115,7 +120,7 @@ export class Predictor {
     const arena = this.kind === 'arena';
     if (!sn || this.clockOff === null || (arena ? !this.A || sn.t !== 'a' : !this.W || sn.t !== 's')) return false;
     if (arena) this.loadArena(sn); else this.load(sn);
-    const Tp = Math.max(sn.T, t + this.clockOff + this.lead());
+    const Tp = sn.waiting ? sn.T : Math.max(sn.T, t + this.clockOff + this.lead());
     const ph = sn.ph, mode = { canFart: ph === 'race' || ph === 'lobby', physics: ph === 'race' || ph === 'lobby', crawl: ph !== 'results', predict: true };
     const mine = arena ? this.aH.get(this.myId) : this.pwH.get(this.myId), inMe = arena ? !!mine : this.W.hippos.includes(mine), H = this.inHist;
     let hi = 0, T = sn.T;

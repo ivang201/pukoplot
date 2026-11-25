@@ -2,6 +2,7 @@
 //  Бегемот (со всем гардеробом), подписи и плот
 // ============================================================
 import * as THREE from 'three';
+import * as Kit from './crew-kit.js';
 import { SKINS, RIM_R, shapeOf, rimR } from './shared.js';
 import { BODIES, RSKINS } from './cosmetics.js';
 import { skinTex, plankTex, ringTex, metalTex, hex, splatTex, bodyPatTex, ringSkinTex } from './textures.js';
@@ -63,6 +64,7 @@ export async function loadShirtPrints(overrides = SKINS.map((_, i) => i + 1)) {
     texture.anisotropy = 4;
     printMats[i].map.dispose();
     printMats[i].map = texture;
+    jerseys[i].setPrint(texture.image);
     printMats[i].needsUpdate = true;
     shirtImages[i] = url;
   }));
@@ -139,35 +141,10 @@ const G = {
     v.x *= 0.82 + 0.27 * v.y;
     v.z -= 0.48 * Math.max(0, v.z) * Math.exp(-3 * (v.x * v.x + v.y * v.y));
   }),
-  paw: (() => {
-    const geo = new THREE.SphereGeometry(1, 24, 16), p = geo.attributes.position;
-    const colors = [], hoof = new THREE.Color('#544956'), nail = new THREE.Color('#d1b3a3'), c = new THREE.Color();
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      const lobes = 0.5 + 0.5 * Math.cos(11 * x);
-      p.setZ(i, z + 0.12 * Math.max(0, z) * lobes);
-      c.copy(hoof).lerp(nail, smooth(0.55, 0.79, z) * smooth(-0.50, -0.16, y) * smooth(0.15, 0.78, lobes));
-      colors.push(c.r, c.g, c.b);
-    }
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); geo.computeVertexNormals(); return geo;
-  })(),
   // туловище-груша: шире внизу
   torso: deform(new THREE.SphereGeometry(1, 32, 24), pear),
-  // попа: одна форма с ложбинкой и складкой снизу
-  butt: deform(new THREE.SphereGeometry(1, 48, 36), v => {
-    const back = smooth(0.1, -0.6, v.z);                                  // сзади (-Z)
-    v.z += 0.34 * Math.exp(-(v.x * v.x) / 0.018) * back * smooth(-0.95, -0.2, v.y) * smooth(0.95, 0.3, v.y);   // ложбинка
-    v.y -= 0.12 * smooth(-0.2, -1, v.y) * (0.6 + 0.4 * Math.abs(v.x));   // «сидячая» складка
-    v.x *= 1 + 0.12 * smooth(0.4, -0.6, v.y);                              // шире книзу
-  }),
-  shirt: deform(new THREE.SphereGeometry(1, 36, 22, 0, Math.PI * 2, Math.PI * 0.28, Math.PI * 0.5), pear),
-  print: deform(new THREE.SphereGeometry(1, 16, 12, Math.PI / 2 - 0.62, 1.24, Math.PI * 0.34, Math.PI * 0.30), pear),
-  printBack: deform(new THREE.SphereGeometry(1, 16, 12, -Math.PI / 2 - 0.55, 1.1, Math.PI * 0.32, Math.PI * 0.27), pear),
-  limb: new THREE.CapsuleGeometry(0.13, 0.42, 6, 12),
-  thigh: new THREE.CapsuleGeometry(0.16, 0.36, 6, 12),
   ring: new THREE.TorusGeometry(0.12, 0.022, 8, 24),
   stick: new THREE.CylinderGeometry(0.018, 0.018, 1, 6),
-  strap: new THREE.BoxGeometry(0.11, 0.42, 0.06),
   cyl: new THREE.CylinderGeometry(1, 1, 1, 24),
   cone: new THREE.ConeGeometry(1, 1, 16),
   box: new THREE.BoxGeometry(1, 1, 1),
@@ -177,21 +154,16 @@ const G = {
 };
 const M = {
   eye: std(0xffffff, { map: eyeMap, roughness: 0.29 }), brow: std(0x453744, { roughness: 0.86 }),
-  paw: std(0xffffff, { vertexColors: true, roughness: 0.72 }),
+  bandKnot: std(0xb9433e, { roughness: .89 }),
   dark: std(0x2b2f36), white: std(0xffffff, { roughness: 0.3 }), black: std(0x111111, { roughness: 0.3 }), pink: std(0xd09090), tooth: std(0xfff8e0),
   stain: std(0x5a3815, { roughness: 0.35 }), gold: std(0xf2c14e, { metalness: 0.75, roughness: 0.25 }), metal: std(0xb8c0cc, { metalness: 0.7, roughness: 0.3, map: metalTex().map }),
   star: new THREE.MeshBasicMaterial({ color: 0xffe14a }), x: std(0x1a1a1a),
 };
-const shirtMats = SKINS.map(sk => std(sk.shirt, { roughness: 0.92 }));
-const jerseys = SKINS.map(sk => {
-  const map = paintedMap(ctx => {
-    ctx.fillStyle = hex(sk.shirt); ctx.fillRect(0, 0, 256, 128);
-    ctx.fillStyle = 'rgba(33,39,49,.27)'; ctx.fillRect(0, 117, 256, 11);
-    ctx.fillStyle = sk.shirt === 0xf2efe8 ? '#ac594e' : '#f5e4c5';
-    ctx.fillRect(0, 0, 256, 3); ctx.fillRect(0, 120, 256, 3);
-  }, 4);
-  return std(0xffffff, { map, roughness: 0.92 });
-});
+const shirtMats = SKINS.map(sk => std(sk.shirt, { vertexColors: true, roughness: 0.85 }));
+const jerseys = SKINS.map((skin, i) => Kit.jerseySkin(skin, printMats[i].map.image));
+const shortsColors = SKINS.map(skin => new THREE.Color(0x37485d).lerp(new THREE.Color(skin.shirt), 0.024));
+const sharedGeometry = new WeakSet([...Object.values(G), ...Object.values(Kit).flat()].filter(g => g?.isBufferGeometry));
+const sharedMaterials = new WeakSet([...Object.values(M), ...shirtMats, ...jerseys.map(j => j.material), ...Object.values(Kit.kitMaterials)]);
 const blush = new THREE.Color(0xf19285);
 let gasmaskMats;
 function gasmaskMaterials() {
@@ -206,11 +178,13 @@ function gasmaskMaterials() {
     oval(64, 64, 45, 45, 0, '#b8ad8e'); oval(64, 64, 36, 36, 0, '#70756b');
     for (const y of [-18, -9, 0, 9, 18]) oval(64, 64 + y, 24 - Math.abs(y) * 0.4, 2.4, 0, '#242e32');
   });
-  return gasmaskMats = {
+  gasmaskMats = {
     rubber: std(0x405049, { roughness: 0.84 }),
     lens: std(0xffffff, { map: lens, roughness: 0.27, metalness: 0.18 }),
     filter: std(0xffffff, { map: filter, roughness: 0.64, metalness: 0.24 }),
   };
+  for (const mat of Object.values(gasmaskMats)) sharedMaterials.add(mat);
+  return gasmaskMats;
 }
 
 // Позиции пятен грязи на теле (общие для всех бегемотов)
@@ -234,13 +208,15 @@ export function makeHippo(skinIdx, look = {}) {
   const sk = Math.min(Math.max(skinIdx | 0, 0), SKINS.length - 1);
   const B = BODIES.find(b => b.id === look.body) || BODIES[0];
   const skin = skinTex(), pat = B.pat ? bodyPatTex(B.pat) : null;
-  const bodyMat = std(pat ? 0xffffff : B.body, { roughness: B.metal ? 0.28 : B.gloss ? 0.1 : 0.62, metalness: B.metal ? 0.6 : B.gloss ? 0.15 : 0, map: pat ? pat.map : skin.map, normalMap: skin.normalMap, normalScale: new THREE.Vector2(0.4, 0.4) });
+  const relief = pat ? .32 : .14;
+  const bodyMat = std(pat ? 0xffffff : B.body, { roughness: B.metal ? 0.28 : B.gloss ? 0.1 : 0.62, metalness: B.metal ? 0.6 : B.gloss ? 0.15 : 0, map: pat ? pat.map : skin.map, normalMap: skin.normalMap, normalScale: new THREE.Vector2(relief, relief) });
   if (pat && pat.glow) { bodyMat.emissive = new THREE.Color(B.pat === 'lava' ? 0xff6a10 : 0xffffff); bodyMat.emissiveMap = pat.glow; bodyMat.emissiveIntensity = B.pat === 'lava' ? 1.6 : 0.9; }
   if (B.glow) { bodyMat.emissive = new THREE.Color(B.glow); bodyMat.emissiveIntensity = 0.35; }
   const snoutMat = std(B.snout, { roughness: B.gloss ? 0.18 : 0.65, map: muzzleMap, metalness: B.metal ? 0.38 : 0 });
   const snoutBase = snoutMat.color.clone();
   const jawMat = std(B.snout, { vertexColors: true, roughness: 0.65 });
-  const cheekMat = bodyMat.clone(); cheekMat.emissive = new THREE.Color(0xff3300); cheekMat.emissiveIntensity = 0; cheekMat.emissiveMap = null;
+  const shortsColor = shortsColors[sk];
+  const cheekMat = std(shortsColor, { vertexColors: true, roughness: .93, emissive: 0xff3300, emissiveIntensity: 0 });
   const baseCol = new THREE.Color(pat ? 0xffffff : B.body), dirtCol = new THREE.Color(0x6b4a2a);
   const anim = [];          // анимации вещей: fn(t, dt, farting)
   if (B.anim === 'rainbow') anim.push((t) => { baseCol.setHSL((t * 0.12) % 1, 0.75, 0.62); bodyMat.color.copy(baseCol).lerp(dirtCol, (g.userData.dirtK || 0) * 0.45); snoutBase.copy(baseCol).offsetHSL(0.04, 0, 0.08); jawMat.color.copy(snoutBase); });
@@ -251,28 +227,24 @@ export function makeHippo(skinIdx, look = {}) {
   const legs = [];
   for (const sx of [-1, 1]) {
     const leg = new THREE.Group(); leg.position.set(sx * 0.22, 0.18, 0.12); inner.add(leg);
-    mk(G.thigh, bodyMat, leg, 0, -0.18, 0.2, 1, 1, 1).rotation.x = 1.0;
-    mk(G.paw, M.paw, leg, 0, -0.49, 0.48, 0.18, 0.10, 0.22);
+    mk(Kit.leg, bodyMat, leg, 0, 0, 0, 1, 1, 1);
+    mk(Kit.shortLeg, cheekMat, leg, 0, 0, 0, 1, 1, 1);
     legs.push(leg);
   }
-  // попа над водой
-  const cheeks = new THREE.Group(); cheeks.position.set(0, 0.3, -0.26); inner.add(cheeks);
-  mk(G.butt, cheekMat, cheeks, 0, 0, -0.06, 0.48, 0.36, 0.34);
-  mk(G.ball, bodyMat, cheeks, 0, 0.24, -0.38, 0.06, 0.06, 0.09);          // хвостик
-  const stain = mk(G.ball, M.stain, cheeks, 0, -0.1, -0.33, 0.3, 0.17, 0.08); stain.visible = false;
+  // Шорты и хвостик вместе пружинят при толчке.
+  const cheeks = new THREE.Group(); cheeks.position.set(0, .245, -.143); inner.add(cheeks);
+  mk(Kit.shorts, cheekMat, cheeks, 0, 0, 0, 1, 1, 1);
+  const tail = mk(G.ball, bodyMat, cheeks, 0, .125, -.39, .056, .059, .078);
+  tail.rotation.x = -.42;
   // корпус
   const chest = new THREE.Group(); chest.position.set(0, 0.64, 0.02); chest.rotation.x = 0.28; inner.add(chest);
   mk(G.torso, bodyMat, chest, 0, 0, 0, 0.56, 0.6, 0.5);
-  mk(G.shirt, jerseys[sk], chest, 0, 0, 0, 0.585, 0.615, 0.53);
-  mk(G.print, printMats[sk], chest, 0, 0, 0, 0.595, 0.625, 0.54);
-  mk(G.printBack, printMats[sk], chest, 0, 0, 0, 0.595, 0.625, 0.54);
-  for (const sx of [-1, 1]) for (const sz of [1, -1]) { const st = mk(G.strap, shirtColor, chest, sx * 0.27, 0.42, sz * 0.16, 1, 1, 1); st.rotation.x = -sz * 0.45; st.rotation.z = sx * 0.12; }
+  mk(Kit.jerseyGeometry, jerseys[sk].material, chest, 0, 0, 0, 1, 1, 1);
   // руки держатся за кромку
   const arms = [];
   for (const sx of [-1, 1]) {
     const sh = new THREE.Group(); sh.position.set(sx * 0.48, 0.96, 0.12); inner.add(sh);
-    mk(G.limb, bodyMat, sh, sx * 0.06, -0.31, 0.04, 1.10, 1, 1.08).rotation.z = sx * 0.28;
-    mk(G.paw, M.paw, sh, sx * 0.15, -0.64, 0.08, 0.15, 0.105, 0.17);
+    mk(Kit.arms[sx < 0 ? 0 : 1], bodyMat, sh, 0, 0, 0, 1, 1, 1);
     arms.push(sh);
   }
   // голова
@@ -318,7 +290,17 @@ export function makeHippo(skinIdx, look = {}) {
   });
 
   g.scale.setScalar(0.85);
-  g.userData = { anim, inner, head, arms, legs, cheeks, cheekMat, bodyMat, stain, eyes, brows, ears, xEyes, stars, chest, muzzle, jaw, masked, snoutBase, blush, dirt, extra, baseCol, dirtCol, butt: new THREE.Vector3(0, 0.3, -0.66), mouthPos: new THREE.Vector3(0, 1.08, 0.95) };
+  const owned = new Set();
+  g.traverse(part => {
+    if (!part.isMesh) return;
+    if (!sharedGeometry.has(part.geometry)) owned.add(part.geometry);
+    if (!sharedMaterials.has(part.material)) owned.add(part.material);
+  });
+  const disposeAppearance = () => {
+    for (const resource of owned) resource.dispose();
+    owned.clear();
+  };
+  g.userData = { anim, inner, head, arms, legs, cheeks, cheekMat, shortsColor, bodyMat, eyes, brows, ears, xEyes, stars, chest, muzzle, jaw, masked, snoutBase, blush, dirt, extra, baseCol, dirtCol, butt: new THREE.Vector3(0, 0.3, -0.66), mouthPos: new THREE.Vector3(0, 1.08, 0.95), disposeAppearance };
   return g;
 }
 
@@ -326,8 +308,7 @@ export function setHippoDirt(h, d) {
   const U = h.userData, n = Math.round(d * U.dirt.length); U.dirtK = d;
   U.dirt.forEach((m, i) => { m.visible = i < n; });
   U.bodyMat.color.copy(U.baseCol).lerp(U.dirtCol, d * 0.45);
-  U.cheekMat.color.copy(U.baseCol).lerp(U.dirtCol, d * 0.6);
-  U.stain.visible = d > 0.25;
+  U.cheekMat.color.copy(U.shortsColor).lerp(U.dirtCol, d * 0.6);
 }
 
 function addHat(head, id, shirtMat, mk, anim) {
@@ -336,10 +317,9 @@ function addHat(head, id, shirtMat, mk, anim) {
   const C = (geo, mat, x, y, z, sx, sy, sz) => mk(geo, mat, g, x, y, z, sx, sy, sz);
   switch (id) {
     case 'cap': {
-      const mat = shirtMat;
-      const dome = C(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), mat, 0, -0.02, 0, 0.34, 0.24, 0.36);
-      C(G.cyl, mat, 0, 0, 0.36, 0.26, 0.02, 0.2).rotation.x = -0.15;
-      C(G.ball, M.white, 0, 0.21, 0, 0.04, 0.03, 0.04); break;
+      C(Kit.cap, shirtMat, 0, 0, 0, 1, 1, 1);
+      C(Kit.bill, shirtMat, 0, 0, 0, 1, 1, 1);
+      C(G.ball, M.white, 0, .251, -.04, .030, .021, .030); break;
     }
     case 'cowboy': {
       const brown = std(0x8b5a2b, { roughness: 0.85 });
@@ -355,10 +335,13 @@ function addHat(head, id, shirtMat, mk, anim) {
       C(G.box, fur, 0, 0.08, 0.38, 0.3, 0.14, 0.05); break;
     }
     case 'bandana': {
-      const red = std(0xc8202e, { roughness: 0.8 });
-      C(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), red, 0, -0.06, 0, 0.4, 0.22, 0.42);
-      C(G.ball, red, 0, -0.04, -0.42, 0.07, 0.07, 0.07);
-      for (const sx of [-1, 1]) C(G.box, red, sx * 0.07, -0.16, -0.44, 0.06, 0.18, 0.02).rotation.z = sx * 0.4; break;
+      C(Kit.bandana, Kit.kitMaterials.cotton, 0, 0, 0, 1, 1, 1);
+      C(G.ball, M.bandKnot, .251, -.018, -.233, .068, .052, .069);
+      for (const s of [-1, 1]) {
+        const tail = C(Kit.bandanaTail, Kit.kitMaterials.cotton, .254, -.026, -.245, s, s < 0 ? .81 : 1, 1);
+        tail.rotation.set(.67, s * .25, .48 + s * .23);
+      }
+      break;
     }
     case 'propeller': {
       const a = std(0xf2c14e), b = std(0x3d8fe0);
@@ -397,10 +380,8 @@ function addHat(head, id, shirtMat, mk, anim) {
       break;
     }
     case 'beanie': {
-      const k = std(0x2f7fd0, { roughness: 1 }), w = std(0xffffff, { roughness: 1 });
-      C(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), k, 0, -0.06, 0, 0.4, 0.34, 0.42);
-      C(G.cyl, w, 0, -0.04, 0, 0.41, 0.1, 0.43);
-      C(G.ballHi, w, 0, 0.3, 0, 0.11, 0.11, 0.11); break;
+      C(Kit.beanie, Kit.kitMaterials.wool, 0, 0, 0, 1, 1, 1);
+      break;
     }
     case 'party': {
       const tex = std(0xff4fa0, { roughness: 0.6 }), dots = std(0xffe14a);
@@ -484,9 +465,7 @@ function addGlasses(head, id, mk, anim) {
       for (const sx of [-1, 1]) { mk(G.ring, M.black, head, sx * 0.2, 0.36, 0.33, 1, 1, 1); mk(G.stick, M.black, head, sx * 0.34, 0.37, 0.18, 1, 0.3, 1).rotation.x = Math.PI / 2; }
       mk(G.stick, M.black, head, 0, 0.38, 0.33, 1, 0.16, 1).rotation.z = Math.PI / 2; break;
     case 'sun': {
-      const lens = std(0x111318, { roughness: 0.1, metalness: 0.4 });
-      for (const sx of [-1, 1]) mk(G.box, lens, head, sx * 0.19, 0.36, 0.33, 0.2, 0.12, 0.03);
-      mk(G.box, M.black, head, 0, 0.4, 0.33, 0.46, 0.025, 0.03); break;
+      mk(Kit.sunglasses, Kit.kitMaterials.lacquer, head, 0, 0, 0, 1, 1, 1); break;
     }
     case 'nerd': {
       const fr = std(0xffffff), r = std(0xe8303a, { transparent: true, opacity: 0.75 }), b = std(0x2bc8e8, { transparent: true, opacity: 0.75 });

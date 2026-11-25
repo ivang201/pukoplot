@@ -7,9 +7,12 @@
 // ============================================================
 import { PHYS, DT, moveRaft, addRaftJet, bounceRaft, kickRaft, limitRaftSpeed, RAFT_R, RIM_R, DEFAULT_RULES, wrapAngle, sectorCenter, sectorHalf, closestOnSeg, mulberry32, shapeOf, rimR, supportDir } from './shared.js';
 import { NOMODS } from './cosmetics.js';
+import { resetTowDuck, stepTow, towDockSide } from './tow.js';
 
 export const ARENA_R = 24;
 export const ARENA_MODES = {
+  tow: { name: 'Утка на буксире', sub: 'доставка в свою гавань', teams: 2, goal: 2, time: 90, theme: 'day', icon: '🦆',
+    desc: 'Подплыви к утке на малой скорости, и трос зацепится сам. Затащи утку между буйками своего причала. Соперник может перехватить её, если подойдёт ближе буксира. Две доставки за 90 секунд.' },
   hunger1: { name: 'Голодные игры', sub: 'каждый сам за себя', per: 1, goal: 3, time: 180, theme: 'sunset', icon: '☠️', pickups: true, ko: true,
     desc: 'Каждый на своём плоту. Травит только коричневый дым: сначала пропукайся до коричневого, потом целься попой в чужое лицо — соперник отключится. Трижды вырубил — победил. Шипы на стенах лопают плот.' },
   hunger2: { name: 'Голодные игры', sub: 'пары', per: 2, goal: 3, time: 180, theme: 'lava', icon: '🤝', pickups: true, ko: true,
@@ -69,6 +72,11 @@ const NOOP = new Proxy({}, { get: () => () => {} });
 export function arenaLayout(mode, seed) {
   const rng = mulberry32((seed * 9301 + 49297) | 0);
   const spikes = [], obstacles = [];
+  if (mode === 'tow') {
+    const x = 6 + rng() * 2, z = 7 + rng() * 2;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) obstacles.push({ kind: 'buoy', x: sx * x, z: sz * z, r: 1.1 });
+    return { spikes, obstacles, allSpikes: false };
+  }
   if (mode === 'laps') {           // остров посередине, шипы на внешней стене, пара грибов на трассе
     const k = 4, off = rng() * Math.PI * 2;
     for (let i = 0; i < k; i++) { const c = off + i * Math.PI * 2 / k; spikes.push({ a0: c - 0.14, a1: c + 0.14 }); }
@@ -111,19 +119,24 @@ export function createArena(mode, teams, seed = 1) {
     let ang = n > 0 ? i * Math.PI * 2 / n : 0;
     if (mode === 'ball') ang = i === 0 ? -Math.PI / 2 : Math.PI / 2;
     let sr = mode === 'ball' ? 12 : 15;
+    const side = t.side ?? t.id;
+    if (mode === 'tow') { ang = towDockSide(side) * Math.PI / 2; sr = 13; }
     if (mode === 'laps') { ang = -0.45; sr = 8 + i * 3.4; }
     const R = { id: i, team: t.id, shape: shapeOf(t.shape).id, S: shapeOf(t.shape), x: Math.sin(ang) * sr, z: Math.cos(ang) * sr, vx: 0, vz: 0, a: 0, w: 0, status: 0, statusT: 0, invulnUntil: 0, lastEject: -9, lastHitTeam: -1, lastHitT: -99, dirt: 0, spawnAng: ang, spawnR: sr, boostUntil: 0, shieldUntil: 0, magnetUntil: 0, out: false, inf: false, gate: 0, lap: 0, lastAng: ang, hippos: [] };
+    if (mode === 'tow') R.side = side;
     t.members.forEach((pid, k) => { const h = newArenaHippo(pid); h.raft = i; h.seat = k; h.team = t.id; R.hippos.push(h); A.hippos.push(h); });
     A.rafts.push(R); A.king.push(0);
     resetArenaRaft(A, R, 0, false);
   });
   if (mode === 'ball') A.ball = { x: 0, z: 0, vx: 0, vz: 0, lastTeam: -1, lastT: -99 };
+  if (mode === 'tow') A.duck = resetTowDuck({});
   return A;
 }
 const homePos = (k, n) => wrapAngle(sectorCenter(k, n));
 // Плот на своё место: попой бегемоты смотрят наружу, чтобы пук вёз к центру
 export function resetArenaRaft(A, R, T, invuln = true) {
   let ang = R.spawnAng, sr = A.mode === 'ball' ? 12 : Math.min(15, arenaRadius(A, T) - 4.5);
+  if (A.mode === 'tow') sr = R.spawnR;
   if (A.mode === 'laps') {        // старт или последние пройденные ворота
     if (!R.started) { sr = R.spawnR; } else { ang = lapGateAng((R.gate + LAP_GATES - 1) % LAP_GATES) + 0.12; sr = LAP_R; }
     R.lastAng = ang;
@@ -208,6 +221,10 @@ export function arenaStep(A, T, mode, ev) {
     }
   }
   if (A.ball) stepBall(A, T, E, predict);
+  if (A.duck) {
+    const team = stepTow(A, T, RAD);
+    if (team >= 0 && !predict) E.delivery(team);
+  }
   if (predict) return;
   updateBlobs(A, T, E);
   updateShots(A, T, E, RAD);

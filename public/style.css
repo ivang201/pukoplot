@@ -416,6 +416,14 @@ body:has(#results:not(.hidden)) :is(#achToasts, #coinPops, .confetti) { visibili
 #ahScore .sc.me { background: #fff; outline: 3px solid var(--gas); outline-offset: -6px; }
 #ahScore .sc.king { box-shadow: 0 0 0 4px #ffd23f, 0 3px 0 var(--ink); }
 #ahInfo { font-weight: 800; font-size: 13px; color: #fff; text-shadow: 0 2px 0 var(--ink), 0 0 6px rgba(26,34,56,.6); }
+#towGuide { display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 10px 6px 6px; color: #153e3e; background: #fff3d9; border: 2px solid #194744; border-radius: 12px; box-shadow: 0 2px 0 #143e3d; }
+.tow-compass { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border-radius: 50%; background: #194d4a; }
+#towNeedle { display: block; width: 13px; height: 18px; background: #ffd26f; clip-path: polygon(50% 0, 100% 96%, 50% 71%, 0 96%); }
+.tow-copy { display: grid; gap: 1px; line-height: 1.15; text-align: left; }
+.tow-copy b { font-size: 13px; }
+.tow-copy small { font-size: 11px; }
+#towDistance { margin-left: auto; white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+.tow-match #ahInfo { display: none; }
 table.tour { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 6px; }
 table.tour th { text-align: left; font-size: 12px; color: #4a5068; padding: 4px 6px; }
 table.tour td { padding: 5px 6px; background: rgba(255,255,255,.65); border-top: 2px solid rgba(26,34,56,.08); }
@@ -681,6 +689,12 @@ body > :not(#join) {
 .wardrobe .wh .icon-btn, .modal-card .close { height: 34px; width: 34px; font-size: 16px; }
 .wardrobe .wh .logo { font-size: 27px; }
 .ward-top { border-bottom: 1px dashed var(--reed); padding-bottom: 9px; }
+.ward-views { display: grid; grid-template-columns: repeat(3,1fr); gap: 3px; padding: 3px; margin-top: 8px; border: 1px solid var(--reed); border-radius: 10px; }
+.ward-views button { font: 700 13px var(--font); cursor: pointer; color: var(--ink); background: transparent; border: 0; padding: 7px 5px; border-radius: 7px; }
+.ward-views button[aria-pressed="true"] { background: var(--teal); color: white; }
+.ward-locked { margin-top: 10px; }
+.fitting-room :is(#lobby, #hud, #ultHud, #help, #feed, #toasts, #achToasts, #coinPops, .emote-menu) { visibility: hidden; }
+.fitting-room.in-lobby #game canvas { transform: none; }
 .item.card { border-width: 1px; border-radius: 9px; padding: 8px; }
 .item.card.locked { color: #4d5951; opacity: .85; }
 .modal { background: rgba(16,54,54,.58); }
@@ -696,6 +710,7 @@ body > :not(#join) {
   -webkit-text-stroke: 0; text-shadow: none; box-shadow: 0 2px 0 var(--ink);
 }
 #topbar { width: min(410px, 45vw); }
+.tow-match #timer.overtime { background: #ffda85; border-color: #975023; }
 #progress { height: 12px; border-width: 2px; background: var(--paper-light); box-shadow: 0 2px 0 var(--ink); }
 #progFill { background: linear-gradient(90deg, #1b7977, #69b9aa); }
 #progMarks .mk { height: 16px; top: -4px; width: 4px; border-width: 1px; }
@@ -742,6 +757,7 @@ body > :not(#join) {
   .lobby-scroll h3 { margin: 12px 0 6px; }
   .lobby-foot { padding: 7px 12px 9px; }
   .wardrobe { top: auto; bottom: max(8px, env(safe-area-inset-bottom)); max-height: 74svh; width: auto; }
+  .fitting-room .wardrobe { max-height: 53svh; }
   .emote-menu { right: 9px; bottom: 79px; }
   .in-lobby .emote-menu { left: 9px; right: auto; bottom: auto; top: 13px; }
   .in-lobby .emote-menu #emotes { top: calc(100% + 7px); bottom: auto; left: 0; right: auto; }
@@ -763,6 +779,9 @@ body > :not(#join) {
   #topbar { left: 10px; top: 18px; width: 43vw; transform: none; }
   #timer { top: 34px; left: 10px; right: auto; font-size: 16px; }
   #arenaHud, #endlessHud { left: 10px; transform: none; max-width: 60vw; align-items: start; }
+  .tow-match #arenaHud { width: min(245px, 65vw); max-width: 65vw; justify-items: start; }
+  .tow-match #timer { left: auto; right: 10px; top: 51px; }
+  .tow-match #towGuide { gap: 5px; padding: 4px 7px 4px 4px; }
   #ahScore { justify-content: flex-start; } #ahScore .sc { border-width: 1.5px; }
   #ultHud { bottom: 79px; left: 68px; }
   #touchHint { bottom: 48px; width: max-content; max-width: 92%; font-size: 11px; text-align: center; }
@@ -771,6 +790,7 @@ body > :not(#join) {
 }
 @media (max-height: 500px) and (orientation: landscape) {
   .panel { inset: 6px auto 6px 6px; width: min(410px, 55vw); height: auto; max-height: none; }
+  .tow-match #feed { bottom: 120px; }
   .lobby-head { padding: 5px 12px; } .lobby-head .logo.small { font-size: 22px; }
   .in-lobby .emote-menu { left: auto; right: 9px; top: auto; bottom: 9px; }
   .in-lobby #game canvas { transform: none; }

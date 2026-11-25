@@ -92,7 +92,14 @@
     <div id="progress"><div id="progFill"></div><div id="progMarks"></div><div id="progRaft"></div></div>
   </div>
   <div id="timer">0:00.0</div>
-  <div id="arenaHud" class="hidden"><div id="ahScore"></div><div id="ahInfo"></div></div>
+  <div id="arenaHud" class="hidden">
+    <div id="ahScore"></div><div id="ahInfo"></div>
+    <div id="towGuide" class="hidden">
+      <span class="tow-compass" aria-hidden="true"><i id="towNeedle"></i></span>
+      <span class="tow-copy"><b id="towAction"></b><small id="towHint"></small></span>
+      <strong id="towDistance"></strong>
+    </div>
+  </div>
   <div id="endlessHud" class="hidden"><div id="ehDist">0 м</div><div id="ehLives"></div><div id="ehBest"></div></div>
   <div id="team"></div>
   <div id="syncBadge" class="hidden">Синхронный пук!</div>
@@ -159,7 +166,11 @@
 <!-- Гардероб -->
 <aside id="wardrobe" class="tube wardrobe hidden">
   <div class="wh"><h2 class="logo small">Гардероб</h2><button class="icon-btn" id="wardClose" aria-label="Закрыть">✕</button></div>
-  <p class="note">Вещи с замком открываются за достижения или выпадают из подарков. Легендарные дают баф — и небольшой минус.</p>
+  <div class="ward-views" id="wardViews" role="group" aria-label="Ракурс примерки">
+    <button type="button" data-view="front" aria-pressed="true">Спереди</button>
+    <button type="button" data-view="side" aria-pressed="false">Сбоку</button>
+    <button type="button" data-view="back" aria-pressed="false">Сзади</button>
+  </div>
   <div id="wardBody"></div>
 </aside>
 <!-- Профиль и рекорды -->
